@@ -13,13 +13,24 @@ set -euo pipefail
 
 module load R/4.1.2
 
-FASTA=${1:?Usage: sbatch run_one_genome.sbatch genome.fa.gz species output_dir [window_size]}
-SPECIES=${2:?Usage: sbatch run_one_genome.sbatch genome.fa.gz species output_dir [window_size]}
-OUTPUT_DIR=${3:?Usage: sbatch run_one_genome.sbatch genome.fa.gz species output_dir [window_size]}
-WINDOW_SIZE=${4:-50000}
-STEP_SIZE=${STEP_SIZE:-$WINDOW_SIZE}
+FASTA=${1:?Usage: sbatch run_one_genome.sbatch genome.fa.gz output_dir [window_size] [overlap]}
+OUTPUT_DIR=${2:?Usage: sbatch run_one_genome.sbatch genome.fa.gz output_dir [window_size] [overlap]}
+WINDOW_SIZE=${3:-50000}
+OVERLAP=${OVERLAP:-${4:-4}}
+SPECIES=${SPECIES:-$(basename "$FASTA")}
+SPECIES=${SPECIES%.gz}
+SPECIES=${SPECIES%.fasta}
+SPECIES=${SPECIES%.fa}
+SPECIES=${SPECIES%.fna}
+SPECIES=${SPECIES%.fas}
+STEP_SIZE=${STEP_SIZE:-$((WINDOW_SIZE - OVERLAP))}
 CORES=${SLURM_CPUS_PER_TASK:-1}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ "$STEP_SIZE" -lt 1 ]; then
+  echo "ERROR: step size must be at least 1. Use an overlap smaller than window_size." >&2
+  exit 1
+fi
 
 mkdir -p logs "$OUTPUT_DIR"
 
