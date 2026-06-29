@@ -1,0 +1,279 @@
+---
+title: "Multiome"
+author: "Josema"
+date: "2024-12-03"
+output: html_document
+---
+
+# humn scRNAseq solo
+```{r}
+library(Seurat)
+library(tidyverse)
+```
+
+```{r}
+human_batch1_gex <- Read10X(data.dir = "/users/genomics/josema/multiome/Human_batch1_GEX/outs/filtered_feature_bc_matrix/")
+
+human_batch1_gex <-  CreateSeuratObject(counts = human_batch1_gex, project = "human_batch1_gex", min.features=200)
+
+human_batch1_gex[["percent.mt"]] <- PercentageFeatureSet(human_batch1_gex, pattern = "^MT-")
+
+```
+
+```{r}
+human_batch1_gex_subset <- subset(human_batch1_gex, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+pdf(file='~/plots_multiome.pdf')
+
+VlnPlot(human_batch1_gex, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(human_batch1_gex, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(human_batch1_gex, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+VlnPlot(human_batch1_gex_subset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(human_batch1_gex_subset, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(human_batch1_gex_subset, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+ElbowPlot(human_batch1_gex_subset)
+
+
+DimPlot(human_batch1_gex_subset, reduction = "umap")
+dev.off()
+```
+
+```{r}
+human_batch1_gex_subset <- NormalizeData(human_batch1_gex_subset)
+human_batch1_gex_subset <- FindVariableFeatures(human_batch1_gex_subset) 
+human_batch1_gex_subset <- ScaleData(human_batch1_gex_subset) 
+human_batch1_gex_subset <- RunPCA(human_batch1_gex_subset, features = VariableFeatures(object = human_batch1_gex_subset))
+human_batch1_gex_subset <- FindNeighbors(human_batch1_gex_subset, dims = 1:15)
+human_batch1_gex_subset <- FindClusters(human_batch1_gex_subset)
+human_batch1_gex_subset <- RunUMAP(human_batch1_gex_subset, dims = 1:15)
+
+```
+
+
+# multiome analysis de human
+
+```{r}
+library(tidyverse)
+library(Signac)
+library(Seurat)
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(SeuratObject)
+```
+
+```{r}
+counts <- Read10X_h5("/users/genomics/josema/multiome/Human_batch1/outs/filtered_feature_bc_matrix.h5")
+fragpath <- "/users/genomics/josema/multiome/Human_batch1/outs/atac_fragments.tsv.gz"
+```
+
+```{r}
+# get gene annotations for hg38
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevels(annotation) <- paste0('chr', seqlevels(annotation))
+
+# create a Seurat object containing the RNA adata
+human_d30_unfiltered <- CreateSeuratObject(
+  counts = counts$`Gene Expression`,
+  assay = "RNA"
+)
+
+# create ATAC assay and add it to the object
+human_d30_unfiltered[["ATAC"]] <- CreateChromatinAssay(
+  counts = counts$Peaks,
+  sep = c(":", "-"),
+  fragments = fragpath,
+  annotation = annotation
+)
+```
+
+## atac quality control
+
+```{r}
+DefaultAssay(human_d30_unfiltered) <- "ATAC"
+
+human_d30_unfiltered <- NucleosomeSignal(human_d30_unfiltered)
+human_d30_unfiltered <- TSSEnrichment(human_d30_unfiltered)
+```
+
+
+```{r}
+pdf('/users/genomics/josema/quality_atac_gex_human_batch1.pdf')
+DensityScatter(human_d30_unfiltered, x = 'nCount_ATAC', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE)
+features=c("nCount_RNA",
+           "nCount_ATAC",
+           "TSS.enrichment",
+           "nucleosome_signal",
+           'Nuclear_fraction',
+           'percent.mt',
+           'nFeature_RNA'
+           )
+VlnPlot(
+  object = human_d30_unfiltered,
+  features = features,
+  ncol = 4,
+  pt.size = 0
+)
+
+DimPlot(object = human_d30_unfiltered, reduction = "umap")
+DimPlot(object = human_d30_unfiltered, reduction = "umap.atac")
+
+FeaturePlot(human_d30_unfiltered, features=features, reduction = 'umap')
+FeaturePlot(human_d30_unfiltered, features=features , reduction = 'umap.atac')
+
+# filtered 
+DensityScatter(human_d30_filtered, x = 'nCount_ATAC', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE)
+
+VlnPlot(
+  object = human_d30_filtered,
+  features = features,
+  ncol = 4,
+  pt.size = 0
+)
+
+DimPlot(object = human_d30_filtered, reduction = "umap")
+DimPlot(object = human_d30_filtered, reduction = "umap.atac")
+
+FeaturePlot(human_d30_filtered, features=features, reduction = 'umap')
+FeaturePlot(human_d30_filtered, features=features , reduction = 'umap.atac')
+
+dev.off()
+
+```
+
+```{r}
+saveRDS(human_d30_unfiltered, file = '/users/genomics/josema/multiome/rmd_files/human_batch1.rmd')
+
+
+human_d30_unfiltered <- readRDS('/users/genomics/josema/multiome/rmd_files/human_batch1.rmd')
+```
+
+```{r}
+characteristics <- read.csv('/users/genomics/josema/multiome/Human_batch1/outs/per_barcode_metrics.csv')
+
+mapped_metadata <- characteristics %>%  
+  dplyr::filter(is_cell==1) %>% 
+  dplyr::select(barcode,gex_mapped_reads, gex_conf_exonic_reads,gex_conf_intronic_reads) %>% 
+  column_to_rownames('barcode') %>% 
+  dplyr::mutate(Nuclear_fraction=gex_conf_intronic_reads/(gex_conf_intronic_reads+gex_conf_exonic_reads)) 
+```
+
+```{r}
+human_d30_unfiltered@meta.data <-  cbind(human_d30_unfiltered@meta.data,mapped_metadata[rownames(human_d30_unfiltered@meta.data),]) 
+DefaultAssay(human_d30_unfiltered) <- "RNA"
+human_d30_unfiltered[["percent.mt"]] <- PercentageFeatureSet(human_d30_unfiltered, pattern = "^MT-")
+
+```
+
+```{r}
+human_d30_filtered <- subset(
+  x = human_d30_unfiltered,
+  subset = nFeature_RNA  > 200 &
+    nFeature_RNA < 5000 &
+    percent.mt < 5 & 
+    nCount_ATAC < 100000 &
+    nCount_RNA < 25000 &
+    nCount_ATAC > 1800 &
+    nCount_RNA > 1000 &
+    nucleosome_signal < 2 &
+    TSS.enrichment > 1
+)
+```
+
+
+```{r}
+DefaultAssay(human_d30_unfiltered) <- "RNA"
+human_d30_unfiltered <- NormalizeData(human_d30_unfiltered)
+human_d30_unfiltered <- FindVariableFeatures(human_d30_unfiltered)
+human_d30_unfiltered <- ScaleData(human_d30_unfiltered)
+human_d30_unfiltered <- RunPCA(human_d30_unfiltered)
+human_d30_unfiltered <- RunUMAP(human_d30_unfiltered, dims = 1:30)
+
+DefaultAssay(human_d30_unfiltered) <- "ATAC"
+human_d30_unfiltered <- RunTFIDF(human_d30_unfiltered)
+human_d30_unfiltered <- FindTopFeatures(human_d30_unfiltered, min.cutoff = "q0")
+human_d30_unfiltered <- RunSVD(human_d30_unfiltered)
+# We exclude the first dimension as this is typically correlated with sequencing depth
+human_d30_unfiltered <- RunUMAP(human_d30_unfiltered, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+
+```{r}
+DefaultAssay(human_d30_filtered) <- "RNA"
+human_d30_filtered <- NormalizeData(human_d30_filtered)
+human_d30_filtered <- FindVariableFeatures(human_d30_filtered)
+human_d30_filtered <- ScaleData(human_d30_filtered, features=rownames(human_d30_filtered))
+human_d30_filtered <- RunPCA(human_d30_filtered)
+human_d30_filtered <- FindNeighbors(human_d30_filtered, dims = 1:10)
+human_d30_filtered <- FindClusters(human_d30_filtered, resolution = 0.5)
+human_d30_filtered <- RunUMAP(human_d30_filtered, dims = 1:30)
+
+DefaultAssay(human_d30_filtered) <- "ATAC"
+human_d30_filtered <- RunTFIDF(human_d30_filtered)
+human_d30_filtered <- FindTopFeatures(human_d30_filtered, min.cutoff = "q0")
+human_d30_filtered <- RunSVD(human_d30_filtered)
+# We exclude the first dimension as this is typically correlated with sequencing depth
+human_d30_filtered <- RunUMAP(human_d30_filtered, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+## Marcadores de tipos celulares
+```{r}
+markers <-  c('STMN2','MAP2','DCX','GAP43','SYT5', #Neuron
+                 'TBR1','SLC17A7','SLC17A6', # EN
+                 'SLC32A1','GAD2','DLX2','ASCL1', # IN
+                 'NHLH1','NEUROD4', # nEN
+                 'EOMES','NEUROG1', # IPC
+                 'HOPX','MOXD1','PTN', #oRG
+                 'HES1','PAX6','SOX2','ID4',#RG
+                 'SAMD4A','CCN2', #tRG
+                 'ASPM', # cell div
+                 'FOXJ1','GMNC' #Epend
+                 )
+
+
+pdf('/users/genomics/josema/MultiomeCellMarker.pdf', width = 12 , height =12 )
+DefaultAssay(human_d30_filtered) <- "RNA"
+
+FeaturePlot(human_d30_filtered, features=markers , reduction = 'umap', order = T)
+
+
+DoHeatmap(human_d30_filtered, features = markers) +
+   scale_fill_gradientn(colors = c("blue", "white", "red"))
+
+
+dev.off()
+
+
+
+```
+
+
+
+## clustering
+
+```{r}
+BiocManager::install("celldex")
+BiocManager::install("SingleR")
+
+library(celldex)
+library(SingleR)
+```
+
+```{r}
+ref <- celldex::HumanPrimaryCellAtlasData()
+unique(ref$label.main)
+unique(ref$label.fine)
+
+
+ref <- celldex::HumanPrimaryCellAtlasData()
+unique(ref$label.main)
+unique(ref$label.fine)
+```
+
+
+

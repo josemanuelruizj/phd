@@ -1,0 +1,219 @@
+---
+title: "dorsal_ventral"
+author: "Josema"
+date: "2024-11-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+UMAP_coordinates <- UMAP_coordinates %>% 
+  mutate(com_class= case_when(subclass %in% c('Inhibitory neurons') ~ 'Ventral_Neu',
+                              subclass%in% c('inIPC') ~ 'Ventral_IPC',
+                              subclass%in% c('GE NSC') ~ 'Ventral_NSC',
+                              subclass %in% c('Excitatory neurons') ~ 'Dorsal_Neu',
+                              subclass%in% c('enIPC') ~ 'Dorsal_IPC',
+                              subclass%in% c('dorsal NSC') ~ 'Dorsal_NSC',
+                              TRUE ~ 'Other'),
+         Age=factor(orig.ident, levels=age_oder_monkey)) %>% 
+  filter(com_class!='Other')
+
+
+```
+
+# manno
+
+```{r}
+CNR1_manno <- read.csv('/home/josema/Downloads/manno_cnr1.csv')
+Manno_mouse_meta <- read.csv('/home/josema/Downloads/manno_metadata.csv') %>%  mutate(orig.ident=substr(X, 1,7))
+
+Manno_mouse_meta %>%  distinct(Class)
+
+com_class_order= c('Other','PROG', 'IPC', 'NEU')
+age_order_manno=c('e7.0', 'e8.0', 'e8.5', 'e9.0', 'e10.0',
+  'e11.0', 'e12.0', 'e12.5', 'e13.0','e13.5',
+  'e14.0', 'e14.5', 'e15.0','e15.5', 'e16.0',
+  'e16.25','e16.5', 'e17.0', 'e17.5','e18.0')
+
+Manno_CNR1_exp_meta <- inner_join(CNR1_manno, Manno_mouse_meta) %>%   
+  mutate(com_class= case_when(Class == 'Neuron' ~ 'NEU',
+                              Class == 'Neuroblast' ~ 'IPC',
+                              Class %in% c('Radial glia', 'Neural tube','Neural crest') ~ 'PROG',
+                              TRUE ~ 'Other'),
+         com_class= factor(com_class,levels=com_class_order),
+         Age=factor(Age, levels=age_order_manno)) %>%  filter(com_class!='Other')
+
+
+Manno_dotplot_data <- Manno_CNR1_exp_meta %>%
+  group_by(com_class,Age, Tissue) %>% 
+  summarise(N=n(),
+            Avg=mean(Cnr1,na.rm=TRUE),
+            Percent= (sum(Cnr1>0)/n())) %>% 
+  group_by(Tissue) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  mutate(dataset='Manno') %>% 
+  ungroup()
+
+write_csv(Manno_dotplot_data, '~/manno_dotplot_data_CNR1.csv') 
+
+
+Manno_dotplot_data %>% 
+  mutate(Age=factor(Age, levels=age_order_manno),
+         com_class = factor(com_class, levels=com_class_order) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Tissue, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Tissue~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+```{r}
+
+Manno_dotplot_data <- Manno_CNR1_exp_meta %>%
+  group_by(com_class,Age) %>% 
+  summarise(N=n(),
+            Avg=mean(Cnr1,na.rm=TRUE),
+            Percent= (sum(Cnr1>0)/n())) %>% 
+  group_by(com_class) %>% 
+  mutate(`0_max`=(Avg- min(Avg)) /(max(Avg)-(min(Avg)))) %>% 
+  mutate(dataset='Manno') %>% 
+  ungroup()
+
+write_csv(Manno_dotplot_data, '~/manno_dotplot_data_CNR1.csv') 
+
+
+Manno_dotplot_data %>% 
+  mutate(Age=factor(Age, levels=age_order_manno),
+         com_class = factor(com_class, levels=com_class_order) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=com_class, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+
+# braun
+
+```{r}
+braun_expression <- read_csv('/home/josema/Desktop/human_CNR1.csv') 
+braun_Metadata <- read_csv('/home/josema/Downloads/obs.csv')
+
+braun_ID <- read_csv('/home/josema/Desktop/Braun/CellID.csv')[,2]
+braun_tsne <- read_csv('/home/josema/Desktop/Braun/Embedding.csv') [,2:3]
+braun_age <- read_csv('/home/josema/Desktop/Braun/Age.csv')[,2]
+braun_merged_CNR1<-  cbind(braun_Metadata,braun_expression) 
+
+braun_merged_CNR1 <- cbind(braun_ID, braun_tsne, braun_age) %>% setNames(c('CellID', 'tsne1', 'tsne2', 'Age')) %>% 
+  inner_join(braun_merged_CNR1, by='CellID')
+
+
+braun_merged_CNR1 <- braun_merged_CNR1 %>% 
+  mutate(com_class= case_when(CellClass %in% c("b'Neuron'") ~ 'NEU',
+                              CellClass%in% c("b'Radial glia'") ~ 'RG',
+                              CellClass%in% c("b'Neuronal IPC'"	) ~ 'IPC',
+                              TRUE ~ 'Other'))
+age_order_braun <- paste0(c('5','5.5','6','6.6','6.7','6.9','7','7.5','8','8.1','8.5','9.2','9.5','10','11.5','12','13','14'),'_W')
+
+braun_dotplot <- braun_merged_CNR1 %>%  
+  filter(com_class!='Other') %>% 
+  group_by(com_class,Age, Subregion) %>% 
+  summarise(N=n(),
+            Avg=mean(ENSG00000118432,na.rm=TRUE),
+            Percent= (sum(ENSG00000118432>0)/n())) %>% 
+  group_by(Subregion) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  mutate(dataset='Braun',
+         Age=paste0(as.factor(Age),'_W'),
+         ) %>% 
+  ungroup() %>% 
+  mutate(Subregion=gsub("b\\'|\\'",'',Subregion),
+         Age=factor(Age, levels=age_order_braun)) %>% 
+  ggplot(aes(x=Age, y=Subregion, size= N, fill=`0_max`))+
+  geom_point(color='gray30',shape=21)+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(Subregion~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+
+
+braun_tile <- braun_merged_CNR1 %>%  
+    filter(com_class!='Other') %>% 
+  group_by(com_class,Age, Subregion) %>% 
+  summarise(N=n(),
+            Avg=mean(ENSG00000118432,na.rm=TRUE),
+            Percent= (sum(ENSG00000118432>0)/n())) %>% 
+  group_by(Subregion) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  mutate(dataset='Braun',
+         Age=paste0(as.factor(Age),'_W')) %>% 
+  ungroup() %>% 
+  mutate(Subregion=gsub("b\\'|\\'",'',Subregion),
+         Age=factor(Age, levels=age_order_braun),
+         com_class = factor(com_class, levels=c('RG', 'IPC', 'NEU')) ) %>% 
+  ggplot(aes(x=Age, y=Subregion, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(Subregion~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+braun_tile
+braun_dotplot
+```

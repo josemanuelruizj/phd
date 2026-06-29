@@ -1,0 +1,806 @@
+---
+title: "bonobo brain"
+author: "Josema"
+date: "2025-01-27"
+output: html_document
+---
+
+# bonobo
+
+# multiome analysis de human
+
+```{r}
+library(tidyverse)
+library(Signac)
+library(Seurat)
+
+options(timeout = 600)
+
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(SeuratObject)
+```
+
+
+```{r}
+counts <- Read10X_h5("/users/genomics/josema/multiome/Bonobo_humanindex/outs/filtered_feature_bc_matrix.h5")
+fragpath <- "/users/genomics/josema/multiome/Bonobo_humanindex/outs/atac_fragments.tsv.gz"
+```
+
+```{r}
+# get gene annotations for hg38
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevels(annotation) <- paste0('chr', seqlevels(annotation))
+
+# create a Seurat object containing the RNA adata
+bonobo_unfiltered <- CreateSeuratObject(
+  counts = counts$`Gene Expression`,
+  assay = "RNA"
+)
+
+# create ATAC assay and add it to the object
+bonobo_unfiltered[["ATAC"]] <- CreateChromatinAssay(
+  counts = counts$Peaks,
+  sep = c(":", "-"),
+  fragments = fragpath,
+  annotation = annotation
+)
+```
+
+## atac quality control
+
+```{r}
+DefaultAssay(bonobo_unfiltered) <- "ATAC"
+
+bonobo_unfiltered <- NucleosomeSignal(bonobo_unfiltered)
+bonobo_unfiltered <- TSSEnrichment(bonobo_unfiltered)
+```
+
+
+```{r fig.height=4, fig.width=4}
+pdf('/users/genomics/josema/quality_atac_gex_bonobo_humanindexed_clustered.pdf')
+DensityScatter(bonobo_unfiltered, x = 'nCount_ATAC', y = 'TSS.enrichment', log_x = TRUE, quantiles = TRUE)
+features=c("nCount_RNA",
+           "nCount_ATAC",
+           "TSS.enrichment",
+           "nucleosome_signal",
+           'Nuclear_fraction',
+           'percent.mt',
+           'nFeature_RNA'
+           )
+```
+
+
+```{r}
+VlnPlot(
+  object = bonobo_unfiltered,
+  features = features,
+  ncol = 4,
+  pt.size = 0,
+  cols = colors
+)+
+  geom_hline(yintercept = 100, color = "gray20") 
+```
+
+
+```{r fig.height=4, fig.width=4}
+colors=c('1'='#48cae4', '2'='#a4d5a6','3'='#80c684',
+  '4'='#68bb6c','5'='#ffad42','6'='#0077b6',
+  '7'='#ef476f','0'='#0096c7' )
+
+DimPlot(object = bonobo_unfiltered, reduction = "umap",  cols = rep("grey",8))+
+  theme(aspect.ratio = 1)
+
+DimPlot(object = bonobo_unfiltered, reduction = "umap",  cols = colors)+
+  theme(aspect.ratio = 1)+
+  theme_void()+
+  guides(color="none")
+
+DimPlot(object = bonobo_unfiltered, reduction = "umap.atac")
+
+
+bonobo_unfiltered[["percent.mt"]] <- PercentageFeatureSet(bonobo_unfiltered, pattern = "^MT-")
+
+FeaturePlot(bonobo_unfiltered, features=features, reduction = 'umap')
+
+FeaturePlot(bonobo_unfiltered, features='percent.mt' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('Mitochontrial genes percentage')+
+  scale_color_gradient(low = 'gray95', high = '#184e77') 
+
+FeaturePlot(bonobo_unfiltered, features='MALAT1' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('MALAT1 Expression')+
+  scale_color_gradient(low = 'gray95', high = '#adc178')
+
+FeaturePlot(bonobo_unfiltered, features='nFeature_RNA' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('Nº of RNA features')+
+  scale_color_gradient(low = 'gray95', high = '#ef233c')
+
+  
+
+FeatureScatter(bonobo_unfiltered, feature1 = "percent.mt", feature2 = "nFeature_RNA")+ scalecolorman
+dev.off()
+
+```
+
+```{r}
+saveRDS(bonobo_unfiltered, file = '/users/genomics/josema/multiome/rmd_files/bonobo_unfiltered.rmd')
+
+
+bonobo_unfiltered <- readRDS('/users/genomics/josema/multiome/rmd_files/bonobo_unfiltered.rmd')
+```
+v
+```{r}
+characteristics <- read.csv('/users/genomics/josema/multiome/Bonobo_humanindex/outs/per_barcode_metrics.csv')
+
+mapped_metadata <- characteristics %>%  
+  dplyr::filter(is_cell==1) %>% 
+  dplyr::select(barcode,gex_mapped_reads, gex_conf_exonic_reads,gex_conf_intronic_reads) %>% 
+  column_to_rownames('barcode') %>% 
+  dplyr::mutate(Nuclear_fraction=gex_conf_intronic_reads/(gex_conf_intronic_reads+gex_conf_exonic_reads)) 
+```
+
+```{r}
+bonobo_unfiltered@meta.data <-  cbind(bonobo_unfiltered@meta.data,mapped_metadata[rownames(bonobo_unfiltered@meta.data),]) 
+DefaultAssay(bonobo_unfiltered) <- "RNA"
+bonobo_unfiltered[["percent.mt"]] <- PercentageFeatureSet(bonobo_unfiltered, pattern = "^MT-")
+
+```
+
+
+
+```{r}
+DefaultAssay(bonobo_unfiltered) <- "RNA"
+bonobo_unfiltered <- NormalizeData(bonobo_unfiltered)
+bonobo_unfiltered <- FindVariableFeatures(bonobo_unfiltered)
+bonobo_unfiltered <- ScaleData(bonobo_unfiltered, , features=rownames(bonobo_filtered))
+  bonobo_unfiltered <- RunPCA(bonobo_unfiltered, 
+                              features= VariableFeatures(bonobo_unfiltered))
+bonobo_unfiltered <- FindNeighbors(bonobo_unfiltered, dims = 1:10)
+bonobo_unfiltered <- FindClusters(bonobo_unfiltered, resolution = 0.5)
+bonobo_unfiltered <- RunUMAP(bonobo_unfiltered, dims = 1:30)
+
+DefaultAssay(bonobo_unfiltered) <- "ATAC"
+bonobo_unfiltered <- RunTFIDF(bonobo_unfiltered)
+bonobo_unfiltered <- FindTopFeatures(bonobo_unfiltered, min.cutoff = "q0")
+bonobo_unfiltered <- RunSVD(bonobo_unfiltered)
+# We exclude the first dimension as this is typically correlated with sequencing depth
+bonobo_unfiltered <- RunUMAP(bonobo_unfiltered, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+
+
+
+## clustering
+
+```{r}
+BiocManager::install("celldex")
+BiocManager::install("SingleR")
+
+library(celldex)
+library(SingleR)
+```
+
+```{r}
+ref <- celldex::HumanPrimaryCellAtlasData()
+unique(ref$label.main)
+unique(ref$label.fine)
+
+
+ref <- celldex::HumanPrimaryCellAtlasData()
+unique(ref$label.main)
+unique(ref$label.fine)
+```
+
+```{r}
+bonobo_unfiltered %>%  write
+```
+
+
+# Local analysis
+
+```{r}
+library(Seurat)
+library(Signac)
+library(tidyverse)
+bonobo_unfiltered <- readRDS('~/Downloads/bonobo_unfiltered.rmd')
+bonobo_unfiltered@assays$RNA$counts
+```
+
+
+## Marcadores de tipos celulares
+```{r fig.height=40, fig.width=20}
+markers_neurodev <-  c('STMN2','MAP2','DCX','GAP43','SYT5', #Neuron
+                 'TBR1','SLC17A7','SLC17A6', # EN
+                 'SLC32A1','GAD2','DLX2','ASCL1', # IN
+                 'NHLH1','NEUROD4', # nEN
+                 'EOMES','NEUROG1', # IPC
+                 'HOPX','MOXD1','PTN', #oRG
+                 'HES1','PAX6','SOX2','ID4',#RG
+                 'SAMD4A','CCN2', #tRG
+                 'ASPM', # cell div
+                 'FOXJ1','GMNC' #Epend
+                 )
+
+adult_markers <-  c('INA', 
+                    'SLC17A6', 'SLC17A7',
+                    'SLC32A1',
+                    'PTPRC',
+                    'CLDN5', 'ACTA2',
+                    'LUM', 
+                    'PDGFRA', 'SOX10',
+                    'PLP1',
+                    'AQP4',
+                    'FOXJ1',
+                    'TTR')
+
+adult_brain_cortex_markers <- c(
+  # Neurons
+  "RBFOX3", "MAP2", "SYT1", "SNAP25", "NCAM1", "DCX", "STMN2", "BCL11B",
+  
+  # Astrocytes
+  "GFAP", "AQP4", "S100B", "ALDH1L1", "SLC1A2", "SOX9", "CLDN10", "CSPG4", "TNC",
+  
+  # Oligodendrocytes
+  "MBP", "PLP1", "MOG", "MAG", "CNP", "SOX10", "CLDN11", "MOBP", "NKX2-2",
+  
+  # Microglia
+  "CD68", "AIF1", "TMEM119", "CX3CR1", "P2RY12", "CSF1R", "CD86", "ITGAM",
+  
+  # Excitatory Neurons
+  "SLC17A7", "CAMK2A", "GRIN1", "NRGN", "FOXP1", "SATB2", "KCNQ5",
+  
+  # Inhibitory Neurons
+  "GAD1", "GAD2", "DLX1", "DLX2", "SST", "PVALB", "VIP", "NPY", "LHX6", "ARX",
+  
+  # Oligodendrocyte Progenitor Cells
+  "OLIG2", "PDGFRA", "ASCL1", "CD44", "FABP7", "TCF7L2",
+  
+  # Upper Layer Cortical Neurons
+  "CUX1", "RORB", "LAMP5", "FEZF1", "FOXP2", "TLE4",
+  
+  # Deep Layer Cortical Neurons
+  "TBR1", "FEZF2", "SOX5", "MYT1L", "EBF1",
+  
+  # Mesenchymal Cells
+  "VIM", "ACTA2", "PDGFRB", "COL1A1", "THY1", "FAP", "ALDH1A1", "ITGA5"
+)
+
+
+
+DefaultAssay(bonobo_unfiltered) <- "RNA"
+
+FeaturePlot(bonobo_unfiltered, features=markers_neurodev , reduction = 'umap', order = T)
+FeaturePlot(bonobo_unfiltered, features=markers_neurodev , reduction = 'umap', order = T)
+
+FeaturePlot(bonobo_unfiltered, features=adult_markers , reduction = 'umap', order = T)
+FeaturePlot(bonobo_unfiltered, features=adult_brain_cortex_markers , reduction = 'umap', order = T)
+
+
+```
+
+
+RBFOX3:
+
+    Appeared in the Neurons section twice.
+
+BCL11B:
+
+    Appeared in:
+        Neurons section
+        Excitatory Neurons section
+        Deep Layer Cortical Neurons section
+
+SOX10:
+
+    Appeared in:
+        Oligodendrocytes section
+        Oligodendrocyte Progenitor Cells section
+
+SATB2:
+
+    Appeared in:
+        Excitatory Neurons section
+        Upper Layer Cortical Neurons section
+
+CSPG4:
+
+    Appeared in:
+        Astrocytes section
+        Oligodendrocyte Progenitor Cells section
+
+CD44:
+
+    Appeared in:
+        Oligodendrocyte Progenitor Cells section
+        Mesenchymal Cells section
+
+TLE4:
+
+    Appeared in:
+        Upper Layer Cortical Neurons section
+        Deep Layer Cortical Neurons section
+        
+
+```{r }
+bonobo_unfiltered_pseudobulk <- AggregateExpression(bonobo_unfiltered, assays = 'RNA', return.seurat = T, group.by ='seurat_clusters')
+
+DimPlot(bonobo_unfiltered, reduction = 'umap', label = T)+
+  theme(aspect.ratio = 1)
+DimPlot(bonobo_unfiltered, reduction = 'umap.atac' )+
+  theme(aspect.ratio = 1)
+
+
+DoHeatmap(bonobo_unfiltered_pseudobulk, features = adult_brain_cortex_markers) +
+   scale_fill_gradientn(colors = c("blue", "white", "red"))
+```
+
+
+```{r fig.height=3.5, fig.width=15}
+library(ComplexHeatmap)
+
+data_heatmap <- bonobo_unfiltered_pseudobulk@assays$RNA$scale.data %>%
+  t() %>% 
+  as.data.frame() %>% 
+  select(adult_brain_cortex_markers) 
+
+levels=c("Neurons", "Astrocytes", "Oligodendrocytes", "Microglia", 
+              "Excitatory Neurons", "Inhibitory Neurons", 
+              "OPC", "Upper Layer CN", 
+              "Deep Layer CN", "Mesenchymal Cells")
+
+data_heatmap%>% 
+  as.data.frame() %>% 
+  Heatmap(cluster_columns  = F,
+          column_order = colnames(data_heatmap),
+          column_split =  factor(rep(levels ,c(8,9,9,8,7,10,6,6,5,8)),
+                               levels=levels),
+          column_title_gp = gpar(fontsize = 10)
+         )
+          
+
+```
+
+
+
+
+```{r fig.height=4, fig.width=4}
+# Create a new metadata column named 'QC_filter' with 'Good' and 'Bad' labels
+bonobo_unfiltered$QC_filter <- ifelse(bonobo_unfiltered$nFeature_RNA > 100, "Good", "Bad")
+
+# Plot with DimPlot, coloring based on QC_filter
+DimPlot(bonobo_unfiltered, group.by = c("QC_filter")) +
+  scale_color_manual(values = c("Bad" = "gray90", "Good" = "#80c684"))+
+    theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = NULL)+
+    labs(title = NULL)
+
+```
+
+
+```{r fig.height=4, fig.width=4}
+umap_df <- as.data.frame(Embeddings(bonobo_unfiltered, "umap"))
+umap_df$cluster <- bonobo_unfiltered$seurat_clusters
+umap_df$QC_filter <- bonobo_unfiltered$QC_filter
+
+# Define transparency levels
+umap_df$alpha_value <- ifelse(umap_df$QC_filter == "Good", 1, 0.05)
+
+# Create UMAP plot with cluster colors and QC-based alpha
+ggplot(umap_df, aes(x = umap_1, y = umap_2, color = as.factor(cluster), alpha = alpha_value)) +
+  geom_point(show.legend = F, size=0.8) +
+  scale_alpha_identity() +  # Ensures correct alpha values
+  theme_void() +
+  scale_color_manual(values = colors)+
+  theme(aspect.ratio = 1)
+
+```
+
+# Bonobo filtered
+
+```{r}
+bonobo_filtered <- subset(
+  x = bonobo_unfiltered,
+  subset = nFeature_RNA  > 100)
+
+DefaultAssay(bonobo_filtered) <- "RNA"
+bonobo_filtered <- NormalizeData(bonobo_filtered)
+bonobo_filtered <- FindVariableFeatures(bonobo_filtered, nfeatures = 7000)
+bonobo_filtered <- ScaleData(bonobo_filtered,features=rownames(bonobo_filtered))
+bonobo_filtered <- RunPCA(bonobo_filtered, 
+                              features= VariableFeatures(bonobo_filtered))
+bonobo_filtered <- FindNeighbors(bonobo_filtered, dims = 1:10, )
+bonobo_filtered <- FindClusters(bonobo_filtered, resolution = 0.5)
+bonobo_filtered <- RunUMAP(bonobo_filtered, dims = 1:30)
+
+DefaultAssay(bonobo_filtered) <- "ATAC"
+bonobo_filtered <- RunTFIDF(bonobo_filtered)
+bonobo_filtered <- FindTopFeatures(bonobo_filtered, min.cutoff = "q0")
+bonobo_filtered <- RunSVD(bonobo_filtered)
+# We exclude the first dimension as this is typically correlated with sequencing depth
+bonobo_filtered <- RunUMAP(bonobo_filtered, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+```{r}
+bonobo_multimodal <-
+  FindMultiModalNeighbors(
+  object = bonobo_filtered,
+  reduction.list = list("pca", "lsi"),
+  dims.list = list(1:20, 2:10),
+  modality.weight.name = "RNA.weight",
+  verbose = TRUE
+)
+
+bonobo_multimodal <- RunUMAP(
+  object = bonobo_multimodal,
+  nn.name = "weighted.nn",
+  assay = "RNA",
+  verbose = TRUE
+)
+DefaultAssay(bonobo_multimodal) <- 'RNA'
+
+bonobo_multimodal <- FindClusters(
+  object = bonobo_multimodal,
+  graph.name = "wsnn",  # weighted shared nearest neighbor graph created by FindMultiModalNeighbors
+  resolution = 0.8,  # Adjust resolution. 0.8 is the default
+)
+
+
+
+```
+
+# link peaks to genes
+
+```{r fig.height=4, fig.width=4}
+# dimplot del RNA
+
+bonobo_filtered[["percent.mt"]] <- PercentageFeatureSet(bonobo_filtered, pattern = "^MT-")
+
+
+FeaturePlot(bonobo_filtered, features='percent.mt' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('Mitochontrial genes percentage')+
+  scale_color_gradient(low = 'gray95', high = '#184e77') 
+
+FeaturePlot(bonobo_filtered, features='MALAT1' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('MALAT1 Expression')+
+  scale_color_gradient(low = 'gray95', high = '#adc178')
+
+FeaturePlot(bonobo_filtered, features='nFeature_RNA' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('N of RNA features')+
+  scale_color_gradient(low = 'gray95', high = '#ef233c')
+
+DimPlot(bonobo_filtered, reduction = 'umap', cols = colors) +
+    theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = NULL)+
+    labs(title = NULL)
+
+FeaturePlot(bonobo_filtered,
+            reduction = 'umap.atac',
+            features = c('nucleosome_signal'))+
+  theme(aspect.ratio = 1)+
+  ggtitle('Nucleosome signal')+
+  scale_color_gradient(low = 'gray95', high = '#184e77') 
+
+FeaturePlot(bonobo_filtered,
+            reduction = 'umap.atac',
+            features = c('TSS.enrichment'))+
+  theme(aspect.ratio = 1)+
+  ggtitle('TSS enrichment')+
+  scale_color_gradient(low = 'gray95', high = '#adc178') 
+
+FeaturePlot(bonobo_filtered,
+            reduction = 'umap.atac',
+            features = c('nFeature_ATAC'))+
+  theme(aspect.ratio = 1)+
+  ggtitle('Number of Features')+
+  scale_color_gradient(low = 'gray95', high = '#ef233c') 
+
+
+# Dimplot del ATAC
+
+DimPlot(bonobo_filtered, reduction = 'umap.atac' ,cols = colors) +
+    theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = NULL)+
+    labs(title = NULL)
+
+
+
+# Dimplot del multimodal
+DimPlot(bonobo_multimodal, cols = colors) +
+    theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = NULL)+
+    labs(title = NULL)
+```
+
+save bonobo filtered and multimodal
+
+```{r}
+saveRDS(bonobo_filtered, '/home/josema/Downloads/bonobo_filtered.rds')
+saveRDS(bonobo_multimodal, '/home/josema/Downloads/bonobo_muktimodal.rds')
+
+
+bonobo_filtered <- readRDS('/home/josema/Downloads/bonobo_filtered.rds')
+```
+
+
+# heatmap multimodal 
+```{r}
+bonobo_multimodal_pseudobulk <- AggregateExpression(bonobo_multimodal, assays = 'RNA', return.seurat = T, group.by ='seurat_clusters')
+```
+
+
+```{r fig.height=3.5, fig.width=15}
+data_heatmap_multimodal <- bonobo_multimodal_pseudobulk@assays$RNA$scale.data %>%
+  t() %>% 
+  as.data.frame() %>% 
+  select(adult_brain_cortex_markers) 
+
+levels=c("Neurons", "Astrocytes", "Oligodendrocytes", "Microglia", 
+              "Excitatory Neurons", "Inhibitory Neurons", 
+              "OPC", "Upper Layer CN", 
+              "Deep Layer CN", "Mesenchymal Cells")
+
+data_heatmap_multimodal%>% 
+  as.data.frame() %>% 
+  Heatmap(cluster_columns  = F,
+          column_order = colnames(data_heatmap_multimodal),
+          column_split =  factor(rep(levels ,c(8,9,9,8,7,10,6,6,5,8)),
+                               levels=levels),
+          column_title_gp = gpar(fontsize = 10)
+         )
+```
+
+# heatmap filtered
+
+```{r}
+bonobo_filtered_pseudobulk <- AggregateExpression(bonobo_filtered, assays = 'RNA', return.seurat = T, group.by ='seurat_clusters')
+```
+
+
+```{r fig.height=3, fig.width=15}
+
+devtools::install_github("dgrtwo/gganimate")
+
+data_heatmap_filtered <- bonobo_filtered_pseudobulk@assays$RNA$scale.data %>%
+  t() %>% 
+  as.data.frame() %>% 
+  select(adult_brain_cortex_markers) 
+
+levels=c("Neurons", "Astrocytes", "Oligodendrocytes", "Microglia", 
+              "Excitatory Neurons", "Inhibitory Neurons", 
+              "OPC", "Upper Layer CN", 
+              "Deep Layer CN", "Mesenchymal Cells")
+
+data_heatmap_filtered%>% 
+  as.data.frame() %>% 
+  Heatmap(cluster_columns  = F,
+          column_order = colnames(data_heatmap_filtered),
+          column_split =  factor(rep(levels ,c(8,9,9,8,7,10,6,6,5,8)),
+                               levels=levels),
+          column_title_gp = gpar(fontsize = 10)
+         )
+```
+
+# UMAP with different
+
+```{r}
+bonobo_filtered_2 <- bonobo_filtered
+
+
+
+DefaultAssay(bonobo_filtered_2) <- "RNA"
+bonobo_filtered_2 <- FindNeighbors(bonobo_filtered_2,
+                                   dims = 1:10,
+                                   k.param = 5) 
+bonobo_filtered_2 <- FindClusters(bonobo_filtered_2,
+                                  resolution = 0.8) # above 1, higher number of communities
+bonobo_filtered_2 <- RunUMAP(bonobo_filtered_2,
+                             dims = 1:5,
+                             min.dist = 0.3,  # Default is 0.3; lower keeps more structure
+                             n.neighbors = 5,  # Default is 30; lower values keep more local structure
+                             )
+DimPlot(bonobo_filtered_2, reduction = 'umap') +
+    theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = NULL)+
+    labs(title = NULL)
+
+```
+
+```{r}
+
+FeaturePlot(bonobo_filtered_2, features='percent.mt' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('Mitochontrial genes percentage')+
+  scale_color_gradient(low = 'gray95', high = '#184e77') 
+
+FeaturePlot(bonobo_filtered_2, features='MALAT1' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('MALAT1 Expression')+
+  scale_color_gradient(low = 'gray95', high = '#adc178')
+
+FeaturePlot(bonobo_filtered_2, features='nFeature_RNA' , reduction = 'umap', order = T)+
+  theme(aspect.ratio = 1)+
+  ggtitle('N of RNA features')+
+  scale_color_gradient(low = 'gray95', high = '#ef233c')
+
+DimPlot(bonobo_filtered_2, reduction = 'umap') +
+    theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = NULL)+
+    labs(title = NULL)
+
+ElbowPlot(bonobo_filtered)
+```
+
+
+
+```{r fig.height=20, fig.width=20}
+library(ggpubr)  # For arranging plots compactly
+
+test_umap_parameters <- function(seurat_obj) {
+  # Define parameter ranges
+  k_values <- c(20, 40, 60)
+  resolution_values <- c(0.4, 0.8, 1.2, 1.6)
+  min_dist_values <- c(0.1, 0.3, 0.5)
+  n_neighbors_values <- c(30, 50, 70)
+  
+  plot_list <- list()
+  count <- 1  # Track plot index
+  
+  # Loop through all combinations
+  for (k in k_values) {
+    for (res in resolution_values) {
+      for (min_d in min_dist_values) {
+        for (n_neigh in n_neighbors_values) {
+          
+          # Clone original object to avoid modifying input
+          temp_obj <- seurat_obj
+          
+          # Run Seurat steps with different parameters
+          temp_obj <- FindNeighbors(temp_obj, dims = 1:30, k.param = k)
+          temp_obj <- FindClusters(temp_obj, resolution = res)
+          temp_obj <- RunUMAP(temp_obj, dims = 1:30, min.dist = min_d, n.neighbors = n_neigh)
+          
+          # Create UMAP plot with parameters in subtitle
+          p <- DimPlot(temp_obj, reduction = 'umap') +
+            theme_void() +
+            theme(aspect.ratio = 1, legend.position = "none", plot.margin = margin(1, 1, 1, 1, "mm")) +
+            labs(subtitle = paste0("k=", k, ", res=", res, ",\n min.dist=", min_d, ", n.neigh=", n_neigh))
+          
+          # Store plot in list
+          plot_list[[count]] <- p
+          count <- count + 1
+        }
+      }
+    }
+  }
+  
+  # Arrange all plots compactly using ggarrange
+  combined_plot <- ggarrange(plotlist = plot_list, ncol = 4, nrow = 5)  
+  
+  return(combined_plot)
+}
+
+# Run the function on your dataset
+plots <- test_umap_parameters(bonobo_filtered_2)
+
+pdf('/home/josema/Downloads/plots_variables.pdf', width = 20, height = 20)
+print(plots)  # Ensure the plot is printed inside the PDF
+dev.off()
+```
+
+# create a gif 
+
+```{r}
+library(Seurat)
+library(ggplot2)
+
+BiocManager::install('udunits2')
+library(gganimate)
+library(dplyr)
+
+# Function to test different UMAP parameters and store results
+generate_umap_data <- function(seurat_obj) {
+  # Define parameter ranges
+  k_values <- c(20, 40, 60)
+  resolution_values <- c(0.4, 0.8, 1.2, 1.6)
+  min_dist_values <- c(0.1, 0.3, 0.5)
+  n_neighbors_values <- c(5, 20, 70)
+
+  umap_data_list <- list()
+  frame_count <- 1
+  
+  # Loop through all parameter combinations
+  for (k in k_values) {
+    for (res in resolution_values) {
+      for (min_d in min_dist_values) {
+        for (n_neigh in n_neighbors_values) {
+          
+          # Clone original object to avoid modifying input
+          temp_obj <- seurat_obj
+          
+          # Run Seurat steps with different parameters
+          temp_obj <- FindNeighbors(temp_obj, dims = 1:30, k.param = k, verbose = FALSE)
+          temp_obj <- FindClusters(temp_obj, resolution = res, verbose = FALSE)
+          temp_obj <- RunUMAP(temp_obj, dims = 1:30, min.dist = min_d, n.neighbors = n_neigh, verbose = FALSE)
+
+          # Extract UMAP coordinates
+          umap_df <- as.data.frame(Embeddings(temp_obj, "umap"))
+          umap_df$Cluster <- as.factor(Idents(temp_obj))  # Add cluster identity
+          umap_df$Frame <- frame_count  # Frame number for animation
+          umap_df$Params <- paste0("k=", k, ", res=", res, ", min.dist=", min_d, ", n.neigh=", n_neigh)
+
+          umap_data_list[[frame_count]] <- umap_df
+          frame_count <- frame_count + 1
+        }
+      }
+    }
+  }
+
+  # Combine all UMAP data
+  umap_data <- bind_rows(umap_data_list)
+  return(umap_data)
+}
+
+# Function to create animated UMAP plot
+create_umap_animation <- function(umap_data, gif_path = "umap_animation.gif") {
+  p <- ggplot(umap_data, aes(x = UMAP_1, y = UMAP_2, color = Cluster)) +
+    geom_point(alpha = 0.7, size = 1.5) +  # Adjust point size and transparency
+    theme_minimal(base_size = 14) +  # Use minimal theme for clarity
+    theme(legend.position = "none") +
+    labs(title = "UMAP Parameter Testing", subtitle = "{closest_state}") +  
+    transition_states(Params, transition_length = 2, state_length = 1) +
+    ease_aes('linear')
+
+  # Save as GIF
+  anim_save(gif_path, animation = p, width = 8, height = 6, units = "in", res = 150)
+  message("GIF saved at: ", gif_path)
+}
+
+# Run the pipeline
+umap_data <- generate_umap_data(bonobo_filtered_2)
+create_umap_animation(umap_data)
+
+
+```
+
+
+# mapping to kanton dataset
+
+```{r}
+library(tidyverse)
+kanton <- readRDS('/home/josema/Downloads/org2m_human_singlecells_GRCh38.rds')
+
+kanton <- FindVariableFeatures(kanton, verbose = FALSE)
+kanton <- RunPCA(kanton, verbose = FALSE)
+
+raw_counts <- Matrix::readMM(file = '/home/josema/Downloads/human_cell_counts_consensus.mtx.gz') %>%  Matrix::Matrix(data=., sparse=T)
+
+
+
+
+anchors <- FindTransferAnchors(
+  reference = kanton,
+  query = bon,
+  normalization.method = "SCT",  # Use "SCT" if using SCTransform; otherwise, use "LogNormalize"
+  reference.reduction = "pca",
+  dims = 1:30
+)
+
+
+VlnPlot(object = kanton$celltype_reannot, features = 'NEUROG2')
+
+
+Seurat::vio
+```
+

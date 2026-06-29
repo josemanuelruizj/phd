@@ -1,0 +1,271 @@
+---
+title: "Biomart obtain ort. genes"
+author: "Josema"
+date: "2025-02-14"
+output: html_document
+---
+
+```{r}
+# Install and load biomaRt
+library(biomaRt)
+library(tidyverse)
+
+# Connect to Ensembl
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Define correct attributes (check the latest Ensembl names using listAttributes)
+attributes <- c("ensembl_gene_id", "external_gene_name", 
+                "ptroglodytes_homolog_orthology_type", "ptroglodytes_homolog_ensembl_gene",
+                "ggorilla_homolog_orthology_type", "ggorilla_homolog_ensembl_gene",
+                "pabelii_homolog_orthology_type", "pabelii_homolog_ensembl_gene")
+
+# Retrieve orthologs
+orthologs <- getBM(attributes = attributes, mart = ensembl)
+
+# Save to CSV
+write.csv(orthologs, "/home/josema/Downloads/human_chimp_gorilla_orangutan_orthologs.csv", row.names = FALSE)
+```
+
+# count & statistics 
+
+```{r}
+
+orthologs <- read.csv("/home/josema/Downloads/human_chimp_gorilla_orangutan_orthologs.csv")
+
+orthologs[orthologs == ""] <- NA
+
+
+# Human & pan only statistics
+homa_pan_ort <- orthologs %>% 
+  dplyr::select(ensembl_gene_id,external_gene_name,ptroglodytes_homolog_orthology_type) %>% 
+  dplyr::filter(complete.cases(.)) %>% 
+  rename(Class=ptroglodytes_homolog_orthology_type)
+
+homa_pan_ort %>% 
+  count(Class)
+
+
+# Human, pan & gorilla  statistics
+homa_pan_gor_ortorthologs <- orthologs %>% 
+  dplyr::select(ensembl_gene_id,external_gene_name,ptroglodytes_homolog_orthology_type, ggorilla_homolog_orthology_type) %>% 
+  dplyr::filter(complete.cases(.)) %>% 
+  mutate(Class= case_when(ptroglodytes_homolog_orthology_type == 'ortholog_one2one' & ggorilla_homolog_orthology_type== 'ortholog_one2one' ~ 'ortholog_one2one',
+                          ptroglodytes_homolog_orthology_type == 'ortholog_many2many' | ggorilla_homolog_orthology_type== 'ortholog_many2many' ~ 'ortholog_many2many',
+                          TRUE ~ 'ortholog_one2many'
+                          )) 
+
+homa_pan_gor_ortorthologs %>% 
+  count(Class)
+
+# Human, pan , gorilla & pongo statistics
+
+homa_pan_gor_pongo_ortorthologs <- orthologs %>% 
+  dplyr::select(ensembl_gene_id,external_gene_name,ptroglodytes_homolog_orthology_type, ggorilla_homolog_orthology_type,pabelii_homolog_orthology_type) %>% 
+  dplyr::filter(complete.cases(.)) %>% 
+  mutate(Class= case_when(ptroglodytes_homolog_orthology_type == 'ortholog_one2one' & ggorilla_homolog_orthology_type== 'ortholog_one2one' & pabelii_homolog_orthology_type== 'ortholog_one2one' ~ 'ortholog_one2one',
+                          ptroglodytes_homolog_orthology_type == 'ortholog_many2many' | ggorilla_homolog_orthology_type== 'ortholog_many2many'| pabelii_homolog_orthology_type== 'ortholog_many2many' ~ 'ortholog_many2many',
+                          TRUE ~ 'ortholog_one2many'
+                          )) 
+
+homa_pan_gor_pongo_ortorthologs%>% 
+  count(Class)
+
+```
+
+# mirar los bHLH en que ortologos desaparecen
+
+```{r}
+bhlh <-  read.csv('/home/josema/Downloads/Tesis/factors_classification.csv') %>%  
+  dplyr::select(X,Ledent2002.Simionato2007Name) %>% 
+  rename(bHLH=X,
+         Family=Ledent2002.Simionato2007Name)
+
+bhlh_h_c <- homa_pan_ort %>% 
+  filter(external_gene_name%in% bhlh$bHLH) %>% 
+  dplyr::select(external_gene_name, Class)
+
+bhlh_h_c_g <-homa_pan_gor_ortorthologs%>% 
+  filter(external_gene_name%in% bhlh$bHLH)%>% 
+  dplyr::select(external_gene_name, Class)
+
+bhlh_h_c_g_p <-homa_pan_gor_pongo_ortorthologs%>% 
+  filter(external_gene_name%in% bhlh$bHLH)%>% 
+  dplyr::select(external_gene_name, Class)
+
+plot_data_wide <- bhlh %>% 
+  left_join(bhlh_h_c , by=c('bHLH'='external_gene_name')) %>% 
+  left_join(bhlh_h_c_g , by=c('bHLH'='external_gene_name')) %>% 
+  left_join(bhlh_h_c_g_p , by=c('bHLH'='external_gene_name')) %>% 
+  rename(Chimp=Class.x,
+         `Chimp+Gorilla`=Class.y,
+         `Chimp+Gorilla+Pongo`=Class) 
+
+plot_data <-plot_data_wide %>% 
+  pivot_longer(-c(bHLH,Family), names_to = 'Level', values_to = 'Orthology') %>% 
+  mutate(Orthology = ifelse(is.na(Orthology), 'NA', Orthology)) %>% 
+  ungroup()
+```
+
+
+```{r fig.height=17, fig.width=4}
+plot <- plot_data %>% 
+  ggplot(aes(x = Level, y = bHLH, fill = Orthology)) +
+  geom_tile(color='gray90') +
+  facet_grid(Family ~ .,
+             scales = "free_y", 
+             space = "free_y", 
+             switch = "y") +
+  scale_fill_manual(values = c("ortholog_one2one" = "#76C19E",  
+                               "ortholog_one2many" = "#89DDC3",  
+                               'NA' = "#DDDDDD"),
+                    name = "Orthology",  # Legend title
+                    breaks = c("ortholog_one2one", "ortholog_one2many", 'NA'),  
+                    labels = c("One-to-One", "One-to-Many", "NA")) +  
+    theme(strip.background = element_blank(),  
+        strip.placement = "outside",  
+        strip.text.y.left = element_text(angle = 0, hjust = 1),  
+        axis.title.y = element_blank(),  
+        axis.text.y = element_text(hjust = 1),
+        axis.text.x = element_text(angle = 45, hjust = 1),  
+        legend.key.size = unit(0.5, "cm"),  
+        legend.text = element_text(size = 8),  
+        legend.title = element_text(size = 9)) 
+
+ggsave('/home/josema/Desktop/bhlh_ortholog.pdf', plot, device = 'pdf', height = 17, width = 4)
+```
+
+
+```{r, fig.height=10, fig.width=12}
+plot_data %>% 
+  ggplot(aes(x = Level, y = bHLH, fill = Orthology)) +
+  geom_tile(color='white') +
+  facet_wrap(~ Family,  # Use facet_wrap instead of facet_grid
+             scales = "free_y", 
+             ncol = 4,  # Create 2 columns
+             strip.position = "left") +  # Keep facet labels on the left
+  scale_fill_manual(values = c("ortholog_one2one" = "#b08968",  
+                               "ortholog_one2many" = "#ddb892",  
+                               'NA' = "#f8edeb"),
+                    name = "Orthology",  # Legend title
+                    breaks = c("ortholog_one2one", "ortholog_one2many", 'NA'),  
+                    labels = c("One-to-One", "One-to-Many", "NA"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),  # Remove box around facet labels
+        strip.placement = "outside",  # Place facet labels outside the axis
+        strip.text.y.left = element_text(angle = 0, hjust = 1),  # Align facet labels
+        axis.title.y = element_blank(),  # Optional: remove y-axis title
+        axis.text.y = element_text(hjust = 1),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.key.size = unit(0.5, "cm"))  # Ensure y-axis text is readable
+
+```
+
+```{r}
+# Load required libraries
+library(networkD3)
+library(ggalluvial)
+
+# Step 1: Create a summary of counts of Orthology per Level
+df_summary <- plot_data %>%
+  group_by(Level, Orthology) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+# Step 2: Define the order of the levels and create the list of nodes (levels and orthologies)
+levels_order <- c("Chimp", "Chimp+Gorilla", "Chimp+Gorilla+Pongo")
+
+orthologies <- unique(df_summary$Orthology)
+
+# Nodes will include both levels and orthology types
+nodes <- data.frame(name = c(levels_order, orthologies))
+
+# Step 3: Create links from levels to orthology types at each level
+df_summary$LevelID <- match(df_summary$Level, nodes$name) - 1
+df_summary$OrthologyID <- match(df_summary$Orthology, nodes$name) - 1
+
+# Step 4: Create the links dataframe: transitions from levels to orthology types
+links <- df_summary %>%
+  select(LevelID, OrthologyID, count) %>%
+  rename(source = LevelID, target = OrthologyID, value = count)
+
+# Step 5: Create the Sankey diagram
+sankey <- sankeyNetwork(
+  Links = links,
+  Nodes = nodes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  units = "Protein Counts"
+)
+
+# Plot the Sankey diagram
+sankey
+
+
+```
+
+```{r fig.height=4, fig.width=4, warning=FALSE}
+# Load required libraries
+library(dplyr)
+library(ggplot2)
+library(ggalluvial)
+
+# Step 2: Create the plot using ggalluvial
+plot_data_wide %>% 
+  replace(is.na(.), 'NA') %>% 
+  mutate(across(everything(), ~gsub('ortholog_','',.))) %>% 
+ggplot(aes(axis1= Chimp, axis2= `Chimp+Gorilla`, axis3= `Chimp+Gorilla+Pongo`)) +
+  geom_alluvium(aes(fill = `Chimp`)) +
+  geom_stratum(aes(fill = `Chimp`), color='gray60') +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("Chimp", "Chimp+Gorilla", "Chimp+Gorilla+Pongo"), expand = c(0.15, 0.15)) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "bHLH Orthology Transitions Across Levels",
+       x = NULL, y = "Protein") +
+  theme_void()+
+  theme(legend.position = "none")
+
+
+```
+
+# orthology plot biomaRt
+
+```{r}
+
+
+full_plot_data_wide <- homa_pan_ort[,c('external_gene_name', 'Class')] %>% 
+  left_join(homa_pan_gor_ortorthologs[,c('external_gene_name', 'Class')] , by='external_gene_name') %>% 
+  left_join(homa_pan_gor_pongo_ortorthologs[,c('external_gene_name', 'Class')] , by='external_gene_name') %>% 
+  rename(Chimp=Class.x,
+         `Chimp+Gorilla`=Class.y,
+         `Chimp+Gorilla+Pongo`=Class) 
+
+full_plot_data_wide <- full_plot_data_wide %>% 
+  replace(is.na(.), 'NA') %>% 
+  mutate(across(everything(), ~gsub('ortholog_','',.))) 
+
+
+lodes_data <- full_plot_data_wide %>% count(Chimp, `Chimp+Gorilla`, `Chimp+Gorilla+Pongo`) %>%
+  to_lodes_form(full_plot_data_wide, key = "axis", value = "value",
+                            axes = c("Chimp", "Chimp+Gorilla", "Chimp+Gorilla+Pongo"))
+
+ggplot(lodes_data, aes(x = axis, 
+                       stratum = value,
+                       alluvium = alluvium,
+                       y = n,
+                       label = value)) +
+  geom_alluvium(aes(fill = value)) +  # Reduce alpha to speed up rendering
+  geom_stratum(aes(fill = value), color = 'gray60') +
+  scale_x_discrete(limits = c("Chimp",
+                              "Chimp+Gorilla",
+                              "Chimp+Gorilla+Pongo"), 
+                   expand = c(0.15, 0.15)) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Protein Orthology Transitions Across Levels",
+       x = NULL, y = "Protein") +
+  theme_void() +
+  theme(legend.position = "none")
+
+```
+

@@ -1,0 +1,768 @@
+---
+title: "Multiome_completed"
+author: "Josema"
+date: "2025-02-12"
+output: html_document
+---
+
+# Load libraries
+
+```{r}
+library(Seurat)
+library(Signac)
+library(tidyverse)
+
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+```
+
+# Create seurat objects for every run
+
+```{r}
+
+# get gene annotations for hg38
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevels(annotation) <- paste0('chr', seqlevels(annotation))
+
+
+# all names of the second and third batch of sc sequencing
+runs <- c('CH507_FIPS1_D30' ,
+          'Gorilla_CHA322_D30' ,
+          'Orango_FIPS2_D30',
+          'CH507_FIPS1_D90' ,
+          'Gorilla_CHA322_D90' ,
+          'Orango_FIPS2_D90'
+          )
+
+runs_scratch <- c('CH507_FIPS1_D30' ,
+          'Gorilla_CHA322_D30' ,
+          'Gorilla_CHA322_D90' ,
+          'Orango_FIPS2_D90'
+          )
+
+
+runs_home_josema <- c('Orango_FIPS2_D30')
+
+
+runs_home <- c('CH507_FIPS1_D90')
+```
+
+
+```{r}
+
+  
+# Loop through each run and create Seurat objects
+for (run in runs_home) {
+  
+  # Define paths
+  counts_path <- paste0('/users/genomics/josema/multiome/', run, '/outs/filtered_feature_bc_matrix.h5')
+  fragpath <- paste0('/users/genomics/josema/multiome/', run, '/outs/atac_fragments.tsv.gz')
+  
+  # Load counts
+  counts <- Read10X_h5(counts_path)
+  
+  # Create Seurat object with RNA assay
+  assign(run, CreateSeuratObject(
+    counts = counts$`Gene Expression`,
+    assay = "RNA"
+  ))
+  
+  # Create ATAC assay and add it to the object
+  assign(run, {
+                obj <- get(run)
+                obj[["ATAC"]] <- CreateChromatinAssay(
+                  counts = counts$Peaks,
+                  sep = c(":", "-"),
+                  fragments = fragpath,
+                  annotation = annotation
+    )
+    obj
+  })
+}
+
+
+# Loop through each run and create Seurat objects
+for (run in runs_scratch) {
+  
+  # Define paths
+  counts_path <- paste0('/scratch/josema/', run, '/outs/filtered_feature_bc_matrix.h5')
+  fragpath <- paste0('/scratch/josema/', run, '/outs/atac_fragments.tsv.gz')
+  
+  # Load counts
+  counts <- Read10X_h5(counts_path)
+  
+  # Create Seurat object with RNA assay
+  assign(run, CreateSeuratObject(
+    counts = counts$`Gene Expression`,
+    assay = "RNA"
+  ))
+  
+  # Create ATAC assay and add it to the object
+  assign(run, {
+                obj <- get(run)
+                obj[["ATAC"]] <- CreateChromatinAssay(
+                  counts = counts$Peaks,
+                  sep = c(":", "-"),
+                  fragments = fragpath,
+                  annotation = annotation
+    )
+    obj
+  })
+}
+
+
+
+# Loop through each run and create Seurat objects
+for (run in runs_home_josema) {
+  
+  # Define paths
+  counts_path <- paste0('/users/genomics/josema/multiome/josema/', run, '/outs/filtered_feature_bc_matrix.h5')
+  fragpath <- paste0('/users/genomics/josema/multiome/josema/', run, '/outs/atac_fragments.tsv.gz')
+  
+  # Load counts
+  counts <- Read10X_h5(counts_path)
+  
+  # Create Seurat object with RNA assay
+  assign(run, CreateSeuratObject(
+    counts = counts$`Gene Expression`,
+    assay = "RNA"
+  ))
+  
+  # Create ATAC assay and add it to the object
+  assign(run, {
+                obj <- get(run)
+                obj[["ATAC"]] <- CreateChromatinAssay(
+                  counts = counts$Peaks,
+                  sep = c(":", "-"),
+                  fragments = fragpath,
+                  annotation = annotation
+    )
+    obj
+  })
+}
+
+```
+
+```{r}
+# save unmodified files
+
+for (run in runs) {
+saveRDS(object = get(run), file = paste0('/users/genomics/josema/just_in_case/', run, '.rds'))
+}
+```
+
+
+# ortholog genes filtering
+
+```{r}
+features <- readr::read_tsv('/users/genomics/josema/multiome/CH507_FIPS1_D90/outs/filtered_feature_bc_matrix/features.tsv.gz',
+                            col_names = F)[,1:2]
+
+orthologs <- read.csv('/users/genomics/josema/human_chimp_gorilla_orangutan_orthologs.csv')
+
+orthologs[orthologs == "<NA>"] <- NA
+
+orthologs <- orthologs %>% 
+  dplyr::filter(complete.cases(.)) 
+ 
+Orthologos_to_use <- features %>% 
+  dplyr::filter(X1 %in% pull(orthologs,ensembl_gene_id)) %>% 
+  pull(X2)
+
+```
+
+
+# preprocessing and qc of every seurat object
+
+```{r}
+process_seurat_object <- function(seurat_obj) {
+  DefaultAssay(seurat_obj) <- "RNA"
+  #seurat_obj[["RNA"]] <- subset(seurat_obj[["RNA"]], features = Orthologos_to_use)  
+  seurat_obj <- NormalizeData(seurat_obj)
+  seurat_obj <- FindVariableFeatures(seurat_obj)
+  seurat_obj <- ScaleData(seurat_obj)
+  seurat_obj <- RunPCA(seurat_obj)
+  seurat_obj <- RunUMAP(seurat_obj, dims = 1:30)
+  seurat_obj <- FindNeighbors(seurat_obj, dims = 1:30)
+  seurat_obj <- FindClusters(seurat_obj, resolution = 0.5)
+  seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+  
+  DefaultAssay(seurat_obj) <- "ATAC"
+
+seurat_obj <- NucleosomeSignal(seurat_obj)
+seurat_obj <- TSSEnrichment(seurat_obj)
+
+  return(seurat_obj)
+}
+
+# Loop to process Seurat objects
+for (run in runs) {
+    DefaultAssay(get(paste0(run,'_processed_unfiltered'))) <- "RNA"
+}
+
+for (run in runs) {
+  assign(paste0(run,'_processed_unfiltered'), process_seurat_object(get(run)))
+}
+
+for (run in runs) {
+saveRDS(object = get(paste0(run,'_processed_unfiltered')), file = paste0('/users/genomics/josema/multiome/', run, '_unfiltered.rds'))
+}
+```
+
+```{r}
+
+# Create violin plots comparing key metrics across runs
+metrics <- c("nFeature_RNA", 'nCount_RNA' ,"percent.mt", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal")
+
+# Define gradient colors for each metric
+metric_colors <- list(
+  "nFeature_RNA" = c("gray95", "#ef233c"),
+  "nCount_RNA"=c("gray95","#aa234c"),
+  "percent.mt" = c("gray95", "#af9f46"),
+  "nFeature_ATAC" = c("gray95", "#184e77"),
+  "TSS.enrichment" = c("gray95", "#adc178"),
+  "nucleosome_signal" = c("gray95", "#ffad42")  
+)
+run_colors <- c(
+  "CH507_FIPS1_D30" = "#E69A9A",  
+  "Gorilla_CHA322_D30" = "#A8D5A0",  
+  "Orango_FIPS2_D30" = "#A4C7E2",
+  "CH507_FIPS1_D90" = "#c95b5b",  
+  "Gorilla_CHA322_D90" = "#5c8e64",  
+  "Orango_FIPS2_D90" = "#2D5873"   
+)
+
+pdf('/users/genomics/josema/Multiome_second_round.pdf', width = 4 , height =4 )
+
+violin_data <- do.call(rbind, lapply(runs, function(run) {
+  obj <- get(paste0(run,'_processed_unfiltered'))
+  data.frame(
+    Run = run,
+    nFeature_RNA = obj$nFeature_RNA,
+    nCount_RNA = obj$nCount_RNA,
+    percent.mt = obj$percent.mt,
+    nFeature_ATAC = obj$nFeature_ATAC,
+    TSS.enrichment = obj$TSS.enrichment,
+    nucleosome_signal = obj$nucleosome_signal
+  )
+}))
+
+# Melt data for ggplot
+violin_data_long <- reshape2::melt(violin_data, id.vars = "Run")
+
+# Generate violin plots
+
+
+for (metric in metrics) {
+violin_plot <- ggplot(violin_data_long %>% dplyr::filter(variable==metric), aes(x = Run, y = value, fill = Run)) +
+  geom_violin() +
+  scale_fill_manual(values = run_colors) +  
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), 
+        aspect.ratio=1) +
+  labs(title = metric)
+print(violin_plot)
+}
+
+
+# Generate UMAP cluster plots for each Seurat object
+for (run in runs) {
+  obj <- get(paste0(run,'_processed_unfiltered'))
+  umap_plot <- DimPlot(obj, reduction = "umap", group.by = "seurat_clusters") +
+    ggtitle(paste("UMAP Clusters -", run))
+  print(umap_plot)+
+    theme(aspect.ratio = 1)
+  
+  # Generate FeaturePlots for each metric with specific gradient color
+  for (metric in metrics) {
+    # Use a specific gradient based on the metric
+    feature_plot <- FeaturePlot(obj, features = metric) +
+      ggtitle(paste(run, "-", metric)) +
+      scale_color_gradient(low = metric_colors[[metric]][1], high = metric_colors[[metric]][2])
+    print(feature_plot)+
+    theme(aspect.ratio = 1)
+  }
+}
+
+dev.off()
+```
+
+# Filtering and reprocessing
+
+```{r}
+process_filtered_seurat_object <- function(seurat_obj) {
+    DefaultAssay(seurat_obj) <- "RNA"
+
+  temporary_object <- subset(x = seurat_obj,
+                    subset =  nFeature_RNA  > 200 &
+                              nFeature_RNA < 5000 &
+                              percent.mt < 5 & 
+                              nCount_ATAC < 100000 &
+                              nCount_RNA < 25000 &
+                              nCount_ATAC > 1800 &
+                              nCount_RNA > 1000 &
+                              nucleosome_signal < 2 &
+                              TSS.enrichment > 1)
+  temporary_object <- ScaleData(temporary_object, features=rownames(temporary_object))
+  temporary_object <- RunPCA(temporary_object,
+                              features= VariableFeatures(temporary_object))
+  temporary_object <- FindNeighbors(temporary_object, dims = 1:30)
+  temporary_object <- FindClusters(temporary_object, resolution = 0.5)
+  temporary_object <- RunUMAP(temporary_object, dims = 1:30)
+
+  return(temporary_object)
+}
+
+# Loop to process Seurat objects
+for (run in runs) {
+  assign(paste0(run,'_filtered'), process_filtered_seurat_object(get(paste0(run,'_processed_unfiltered'))))
+}
+
+
+```
+
+
+```{r}
+pdf('/users/genomics/josema/Multiome_second_round_filtered.pdf', width = 4 , height =4 )
+
+violin_data <- do.call(rbind, lapply(runs, function(run) {
+  obj <- get(paste0(run,'_filtered'))
+  data.frame(
+    Run = run,
+    nFeature_RNA = obj$nFeature_RNA,
+    percent_mt = obj$percent.mt,
+    nFeature_ATAC = obj$nFeature_ATAC,
+    TSS_enrichment = obj$TSS.enrichment,
+    nucleosome_signal = obj$nucleosome_signal
+  )
+}))
+
+# Melt data for ggplot
+violin_data_long <- reshape2::melt(violin_data, id.vars = "Run")
+
+# Generate violin plots
+violin_plot <- ggplot(violin_data_long, aes(x = Run, y = value, fill = Run)) +
+  geom_violin() +
+  facet_wrap(~variable, scales = "free_y") +
+  scale_fill_manual(values = run_colors) +  
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        aspect.ratio=1) +
+  labs(title = "Comparison of Quality Control Metrics Across Runs")
+
+print(violin_plot)
+
+
+
+# Generate UMAP cluster plots for each Seurat object
+for (run in runs) {
+  obj <- get(paste0(run,'_filtered'))
+  umap_plot <- DimPlot(obj, reduction = "umap", group.by = "seurat_clusters", label = T) +
+    ggtitle(paste("UMAP Clusters -", run))
+  print(umap_plot)+
+    theme(aspect.ratio = 1)
+  
+  # Generate FeaturePlots for each metric with specific gradient color
+  for (metric in metrics) {
+    # Use a specific gradient based on the metric
+    feature_plot <- FeaturePlot(obj, features = metric) +
+      ggtitle(paste(run, "-", metric)) +
+      scale_color_gradient(low = metric_colors[[metric]][1], high = metric_colors[[metric]][2])
+    print(feature_plot)+
+    theme(aspect.ratio = 1)
+  }
+}
+
+dev.off()
+```
+
+
+```{r}
+
+library(ComplexHeatmap)
+
+pdf('/users/genomics/josema/Multiome_second_round_filtered_pseudobulk_heatmaps.pdf', width = 12 , height =3.5 )
+
+markers <- c(
+  # Neuronal Markers
+  'STMN2', 'MAP2', 'DCX', 'GAP43', 'SYT5', # Neurons
+  'TBR1', 'SLC17A7', 'SLC17A6', # Excitatory Neurons (EN)
+  'SLC32A1', 'GAD2', 'DLX2', 'ASCL1', 'GAD1', 'LHX6', 'ARX', # Inhibitory Neurons (IN)
+  'NHLH1', 'NEUROD4', # Early neuronal precursors (nEN)
+  
+  # Intermediate Progenitors
+  'EOMES', 'NEUROG2', 'SOX4', 'SOX11', 
+  
+  # Radial Glia (RG) & Outer Radial Glia (oRG)
+  'HOPX', 'MOXD1', 'PTN', 'VIM', 'PAX6', 'HES1', 'FABP7', 'NES',  
+  'SAMD4A', 'CCN2', # Truncated RG (tRG)
+  
+  # Cell Division
+  'ASPM', 'MKI67', 'TOP2A', 'CDK1', 'CENPF', 'UBE2C',
+  
+  # Ependymal Cells
+  'FOXJ1', 'GMNC', 'RFX3', 'MCIDAS', 'CCDC39',
+  
+  # Astrocytes
+  'GFAP', 'AQP4', 'ALDH1L1', 'SLC1A2', 'SOX9', 
+  
+  # Oligodendrocytes & OPCs
+  'PDGFRA', 'MBP', 'PLP1', 'MOG', 'MAG', 'CNP', 'SOX10', 'CLDN11', 
+  
+  # Microglia
+  'CD68', 'AIF1', 'TMEM119', 'CX3CR1', 'CSF1R', 'CD86', 'ITGAM'
+)
+
+split_sizes <- c(5, 3, 7, 2, 4, 8, 2, 6, 5, 5, 8, 7)
+
+# Define cell type categories for heatmap grouping
+levels <- c("Neuron", "EN", "IN", "early N",
+            "IPC", "RG & oRG", "tRG",
+            "Cell Division", "Ependymal", "Astrocytes", "Oligodendrocytes", "Microglia")
+
+
+# Loop through each filtered Seurat object to generate a heatmap
+for (run in runs) {
+  
+  # Get the filtered Seurat object
+  obj <- get(paste0(run, '_filtered'))
+  
+  # Aggregate expression data per cluster
+  pseudobulk_obj <- AggregateExpression(obj, assays = 'RNA', return.seurat = TRUE, group.by = 'seurat_clusters')
+  
+  # Extract scaled RNA data and select only marker genes
+  data_heatmap <- pseudobulk_obj@assays$RNA$scale.data %>%
+    t() %>% 
+    as.data.frame() %>% 
+    dplyr::select(all_of(markers)) %>% 
+    as.matrix(.)
+  
+  # Generate heatmap
+  Heatmap(
+    data_heatmap,
+    cluster_columns = FALSE,
+    column_order = colnames(data_heatmap),
+    column_split = factor(rep(levels, split_sizes), levels = levels),
+    column_title_gp = gpar(fontsize = 10,fontface = "bold"),
+    name = paste0("Expression Heatmap \n ", run),
+      heatmap_legend_param = list(direction = "horizontal") 
+  )
+}
+
+dev.off()
+
+```
+
+
+# Integration of all types 
+
+
+```{r}
+# Integrate the processed Seurat objects
+seurat_list <- lapply(paste0(runs,'_processed_unfiltered'), get) 
+integration_anchors <- FindIntegrationAnchors(object.list = seurat_list, dims = 1:30)  
+integrated_seurat <- IntegrateData(anchorset = integration_anchors, dims = 1:30)  
+
+saveRDS(integrated_seurat, '/scrath/josema/integrated.rds')
+```
+
+
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(Signac)
+
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(future)
+
+options(future.globals.maxSize = 100000000000)  # Increase max memory if needed
+
+plan("multicore", workers = 80)
+
+runs <- c('CH507_FIPS1_D30' ,
+          'Gorilla_CHA322_D30' ,
+          'Orango_FIPS2_D30',
+          'CH507_FIPS1_D90' ,
+          'Gorilla_CHA322_D90' ,
+          'Orango_FIPS2_D90'
+          )
+
+for (run in runs) {
+  assign(paste0(run,'_processed_unfiltered'), readRDS(paste0('/users/genomics/josema/multiome/',run,'_unfiltered.rds')))
+}
+
+
+for (run in runs) {
+  obj_name <- paste0(run, '_processed_unfiltered')
+  obj <- get(obj_name)  # Retrieve the object
+  DefaultAssay(obj) <- "RNA"  # Set active assay to RNA
+  assign(obj_name, obj)  # Store the modified object back
+  }
+
+seurat_list <- lapply(paste0(runs,'_processed_unfiltered'), get) 
+integration_anchors <- FindIntegrationAnchors(object.list = seurat_list, dims = 1:30)  
+integrated_seurat <- IntegrateData(anchorset = integration_anchors, dims = 1:30)  
+
+saveRDS(object = integrated_seurat, file = '/scarth/josema/integrated_seurat.rds')
+
+
+
+
+```
+
+
+# A reanalysis only with the RNA assay
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(Signac)
+library(future)
+
+library(EnsDb.Hsapiens.v86)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(EnsDb.Hsapiens.v86)
+
+# Set memory limit and parallelization
+options(future.globals.maxSize = 100000000000)  # Adjust max memory if needed
+plan("multicore", workers = 35)
+
+runs <- c('CH507_FIPS1_D30' ,
+          'Gorilla_CHA322_D30' ,
+          'Orango_FIPS2_D30',
+          'CH507_FIPS1_D90' ,
+          'Gorilla_CHA322_D90' ,
+          'Orango_FIPS2_D90'
+          )
+
+# Step 1: Read Seurat objects
+
+for (run in runs) {
+  assign(paste0(run,'_processed_unfiltered'), readRDS(paste0('/users/genomics/josema/multiome/',run,'_unfiltered.rds')))
+}
+
+
+for (run in runs) {
+  obj_name <- paste0(run, '_processed_unfiltered')
+  obj <- get(obj_name)  # Retrieve the object
+  DefaultAssay(obj) <- "RNA"  # Ensure integration is only on RNA data
+  obj <- DietSeurat(obj, assays = "RNA", layers = c('counts', 'data', 'scale.data'), dimreducs=c('pca', 'umap'))
+  assign(obj_name, obj)  # Store the modified object back
+}
+
+
+
+# Step 5: Prepare list for integration
+seurat_list <- lapply(paste0(runs, '_processed_unfiltered'), get)
+
+# Step 6: Perform integration using only RNA data
+integration_anchors <- FindIntegrationAnchors(object.list = seurat_list, dims = 1:30)  
+integrated_seurat <- IntegrateData(anchorset = integration_anchors, dims = 1:30)  
+
+# Step 7: Save integrated dataset
+saveRDS(integrated_seurat, '/scratch/josema/integrated.rds')
+
+```
+
+
+
+
+
+```{r}
+markers=c(
+  # 'Hem'
+  'RSPO2',  'WNT2B',  'WNT8B',  'CALB1',  'RSPO3',
+  'LHX9',  'SP5',  'DMRTA2',  'EMX2',  'FGF13',  'ARX',  'BAMBI',  'FGFR3',
+  
+  # hEM/CPe
+  'CA2',   'TTR',  'NPY1R',  'FOXJ1',  'BMP4')
+
+split_sizes <- c(13, 5)
+
+# Define cell type categories for heatmap grouping
+levels <- c("Hem", "hEM/CPe")
+
+library(tidyverse)
+library(Seurat)
+library(Signac)
+library(future)
+# 
+# library(EnsDb.Hsapiens.v86)
+# library(BSgenome.Hsapiens.UCSC.hg38)
+# library(EnsDb.Hsapiens.v86)
+
+# Set memory limit and parallelization
+options(future.globals.maxSize = 100000000000)  # Adjust max memory if needed
+plan("multicore", workers = 35)
+
+runs <- c('CH507_FIPS1_D30' ,
+          'Gorilla_CHA322_D30' ,
+          'Orango_FIPS2_D30',
+          'CH507_FIPS1_D90' ,
+          'Gorilla_CHA322_D90' ,
+          'Orango_FIPS2_D90'
+          )
+
+# Step 1: Read Seurat objects
+
+for (run in runs) {
+  assign(paste0(run,'_processed_unfiltered'), readRDS(paste0('/users/genomics/josema/multiome/',run,'_unfiltered.rds')))
+}
+```
+
+
+```{r}
+for (run in runs) {
+  
+  # Get the filtered Seurat object
+  obj <- get(paste0(run, '_processed_unfiltered'))
+  DefaultAssay(obj) <- "RNA"  
+  
+  #path to save files
+  path_heatmap_choroid= paste0('~/choroid_plots/', run,'_heatmap_choroid_plexus.pdf')
+  path_pheatmap_choroid= paste0('~/choroid_plots/', run,'_pheatmap_choroid_plexus.pdf')
+  
+  pdf(file=path_pheatmap_choroid, width = 12, height = 12)
+
+  feature <- FeaturePlot(obj, features = markers, order = T)
+  print(feature)
+  dev.off()
+  
+  # Aggregate expression data per cluster
+  pseudobulk_obj <- AggregateExpression(obj, assays = 'RNA', return.seurat = TRUE, group.by = 'seurat_clusters')
+  
+  # Extract scaled RNA data and select only marker genes
+  data_heatmap <- pseudobulk_obj@assays$RNA$scale.data %>%
+    t() %>% 
+    as.data.frame() %>% 
+    dplyr::select(all_of(markers)) %>% 
+    as.matrix(.)
+  
+  # Generate heatmap
+  pdf(file=path_heatmap_choroid, width = 15, height = 8)
+  heatmap <- Heatmap(
+    data_heatmap,
+    cluster_columns = FALSE,
+    column_order = colnames(data_heatmap),
+    column_split = factor(rep(levels, split_sizes), levels = levels),
+    column_title_gp = gpar(fontsize = 10,fontface = "bold"),
+    name = paste0("Expression Heatmap \n ", run),
+      heatmap_legend_param = list(direction = "horizontal") 
+  )
+   print(heatmap)
+   
+   celltype_annotation <- readRDS(paste0('~/multiome/rmd_files/predicted_annotations_',run,'_unfiltered.rds'))
+   obj$predicted_cell_type <- celltype_annotation$predicted.id
+
+ pseudobulk_obj <- AggregateExpression(obj, assays = 'RNA', return.seurat = TRUE, group.by = 'predicted_cell_type')
+  
+  # Extract scaled RNA data and select only marker genes
+  data_heatmap <- pseudobulk_obj@assays$RNA$scale.data %>%
+    t() %>% 
+    as.data.frame() %>% 
+    dplyr::select(all_of(markers)) %>% 
+    as.matrix(.)
+  
+   heatmap <- Heatmap(
+    data_heatmap,
+    cluster_columns = FALSE,
+    column_order = colnames(data_heatmap),
+    column_split = factor(rep(levels, split_sizes), levels = levels),
+    column_title_gp = gpar(fontsize = 10,fontface = "bold"),
+    name = paste0("Expression Heatmap \n ", run),
+      heatmap_legend_param = list(direction = "horizontal") 
+  )
+   print(heatmap)
+  
+  dev.off()
+}
+
+
+
+```
+
+
+
+```{r}
+predicted_annotations_human_chimp_d30 <- readRDS('~/Downloads/predicted_annotations_CH507_FIPS1_D30_unfiltered.rds') %>% 
+  rownames_to_column() %>% 
+  mutate(batch='CH507_FIPS1_D30',
+         age='D30',
+         especies='CH507_FIPS1')%>% 
+  select(predicted.id
+, batch, age, especies )
+  
+predicted_annotations_human_chimp_d90 <- readRDS('~/Downloads/predicted_annotations_CH507_FIPS1_D90_unfiltered.rds')%>% 
+  rownames_to_column() %>% 
+  mutate(batch='CH507_FIPS1_D90',
+         age='D90',
+         especies='CH507_FIPS1')%>% 
+  select(predicted.id
+, batch, age, especies )
+
+predicted_annotations_human_Pongo_d30 <- readRDS('~/Downloads/predicted_annotations_Orango_FIPS2_D30_unfiltered.rds')%>% 
+  rownames_to_column() %>% 
+  mutate(batch='Orango_FIPS2_D30',
+         age='D30',
+         especies='Orango_FIPS2')%>% 
+  select(predicted.id
+, batch, age, especies )
+
+predicted_annotations_human_Pongo_d90 <- readRDS('~/Downloads/predicted_annotations_Orango_FIPS2_D90_unfiltered.rds')%>% 
+  rownames_to_column() %>% 
+  mutate(batch='Orango_FIPS2_D90',
+         age='D90',
+         especies='Orango_FIPS2') %>% 
+  select(predicted.id
+, batch, age, especies )
+
+predicted_annotations_gorilla_chimp_d30 <- readRDS('~/Downloads/predicted_annotations_Gorilla_CHA322_D30_unfiltered.rds')%>% 
+  rownames_to_column() %>% 
+  mutate(batch='Gorilla_CHA322_D30',
+         age='D30',
+         especies='Gorilla_CHA322')  %>% 
+  select(predicted.id
+, batch, age, especies )
+
+predicted_annotations_gorilla_chimp_d90 <- readRDS('~/Downloads/predicted_annotations_Gorilla_CHA322_D90_unfiltered.rds')%>% 
+  rownames_to_column() %>% 
+  mutate(batch='Gorilla_CHA322_D90',
+         age='D90',
+         especies='Gorilla_CHA322')  %>% 
+  select(predicted.id
+, batch, age, especies )
+
+predicted_annotations_human_batch1 <- readRDS('~/Downloads/predicted_annotations_human_batch_1.rds')%>% 
+  rownames_to_column() %>% 
+  mutate(batch='FIPS1_D30',
+         age='D30',
+         especies='Batch1 human') %>% 
+  select(predicted.id
+, batch, age, especies )
+
+```
+
+
+```{r}
+annotations_merged <- rbind(predicted_annotations_gorilla_chimp_d30, predicted_annotations_gorilla_chimp_d90, predicted_annotations_human_batch1, predicted_annotations_human_chimp_d30, predicted_annotations_human_chimp_d90, predicted_annotations_human_Pongo_d30, predicted_annotations_human_Pongo_d90)
+
+annotations_merged %>% 
+  group_by(batch) %>% 
+  count(predicted.id) %>% 
+  mutate(percent=n/sum(n)) %>% 
+  ggplot(aes(x=batch, y=percent, fill=predicted.id ))+
+    geom_col(position = 'stack')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+annotations_merged %>% 
+  group_by(especies) %>% 
+  count(predicted.id) %>% 
+  mutate(percent=n/sum(n)) %>% 
+  ggplot(aes(x=especies, y=percent, fill=predicted.id ))+
+    geom_col(position = 'stack')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+

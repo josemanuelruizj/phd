@@ -1,0 +1,414 @@
+---
+title: "Domain analysis"
+output: html_document
+date: "2024-06-28"
+---
+
+
+
+# Load the data
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+```
+
+# Upload data
+
+```{r}
+marten_domain_PS_complexity_no_TTN_AAs__filtered <- read.delim("~/Downloads/Marten DRIPS Tables 20240625 copy/Without TTN AAs/marten_domain_PS+complexity-no_TTN_AAs_20240609_filtered_20240625.tsv", row.names=1)
+
+marten_domain_PS_complexity_no_TTN_AAs__filtered_with_failures <- read.delim("~/Downloads/Marten DRIPS Tables 20240625 copy/Without TTN AAs/marten_domain_PS+complexity-no_TTN_AAs_20240609_filtered_with_failures_20240625.tsv", row.names=1)
+
+marten_domain_PS_complexity_original <- read.delim("~/Downloads/Marten DRIPS Tables 20240625 copy/Without TTN AAs/marten_domain_PS+complexity-no_TTN_AAs_20240609_original_20240625.tsv", row.names=1)
+
+```
+
+# Modify ages
+
+Cambiar la edad de los dominios para que sea igual en todos los dominios con el mismo accession
+
+```{r}
+
+# oner que solo haya una edad por dominio y que sea la máxima para cada accession
+marten_domain_PS_complexity_no_TTN_AAs__filtered <- 
+  marten_domain_PS_complexity_no_TTN_AAs__filtered %>%  
+  group_by(domain_accession) %>% 
+  mutate(Domain_PS_Age=max(Domain_PS_Age),
+         Domain_PS=max(Domain_PS),
+         Domain_Era=max(Domain_Era),
+         Domain_Era_Age=max(Domain_Era_Age)) %>% 
+  ungroup() 
+
+# asegurarme de que solo haya una edad por dominio
+marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  distinct(domain_accession, Domain_PS) %>% 
+  count(domain_accession,sort = T) %>% 
+  count(n)
+```
+
+## Crear una segunda tabla que me genere las diferencias de edades por gen
+
+```{r}
+
+# crear una tabla que me diga el número de dominios por cada gen y que 
+age_difference_by_gene <- marten_domain_PS_complexity_no_TTN_AAs__filtered %>%  
+  distinct(Name, domain_accession, Domain_PS, Domain_PS_Age, Domain_PS, Domain_PS_Age, Plen, PS) %>% 
+  group_by(Name) %>% 
+  summarise(number_domains= n(),
+            min_PS= min(Domain_PS),
+            min_PS_Age= min(Domain_PS_Age),
+            max_PS= max(Domain_PS),
+            max_PS_Age= max(Domain_PS_Age),
+            Plen=max(Plen),
+            PS=PS) %>% 
+  ungroup() %>% 
+  mutate(ps_dif= max_PS- min_PS,
+         age_dif= max_PS_Age - min_PS_Age) 
+
+
+marten_domain_PS_complexity_no_TTN_AAs__filtered%>% filter(Name=='ENSP00000000233')
+
+```
+
+```{r fig.height=4, fig.width=12}
+age_difference_by_gene %>% 
+    mutate(length_range= cut_width(Plen, width=200, boundary = 0),
+         length_range= paste0('<', as.integer(str_match(length_range, ",(.*)\\]")[,2])),
+         length_range = factor(length_range, levels= c(paste0('<', seq(from = 200, to= 36000,by = 200) )))) %>% 
+  ggplot(aes(x=length_range))+
+  geom_bar()+
+  facet_grid(~number_domains)+
+    coord_cartesian(expand = F) +
+  theme_classic()+
+theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank(), 
+      axis.text.y=element_blank(), 
+      axis.ticks.y=element_blank()) +
+      theme(aspect.ratio=1)
+
+
+
+
+age_difference_by_gene %>% 
+    mutate(length_range= cut_width(Plen, width=200, boundary = 0),
+         length_range= paste0('<', as.integer(str_match(length_range, ",(.*)\\]")[,2])),
+         length_range = factor(length_range, levels= c(paste0('<', seq(from = 200, to= 36000,by = 200) )))) %>% 
+  ggplot(aes(x=PS, y=length_range))+
+  geom_point()+
+  facet_grid(~number_domains)+
+  theme_classic()+
+theme(axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank(), 
+      axis.text.y=element_blank(), 
+      axis.ticks.y=element_blank()) +
+    theme(aspect.ratio=1)
+
+  
+```
+
+
+```{r}
+age_difference_by_gene %>% 
+    mutate(length_range= cut_width(Plen, width=200, boundary = 0),
+         length_range= paste0('<', as.integer(str_match(length_range, ",(.*)\\]")[,2])),
+         length_range = factor(length_range, levels= c(paste0('<', seq(from = 200, to= 36000,by = 200) )))) %>%
+  arrange((number_domains)) %>% 
+  ggplot(aes(x=PS, y=length_range))+
+  geom_jitter(aes(color=number_domains))+
+  theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) + 
+    theme(aspect.ratio=1)+
+    scale_color_gradient(low = "#caf0f8",high = '#03045e') 
+
+```
+
+
+```{r}
+age_difference_by_gene %>% 
+  mutate(ps_dif= ifelse(number_domains==1, -1, ps_dif),
+         age_dif= ifelse(number_domains==1, -1, age_dif)) %>% 
+  count(ps_dif) %>% 
+  ggplot(aes(ps_dif,y=n)) +
+  geom_col(fill='lightcoral')+
+  geom_text(aes(label = n), hjust=0, vjust = 0, angle = 45)+
+  theme_classic()+
+  coord_cartesian(expand = F) +
+  xlab('Philo Stratum Difference') +
+  ylab('Count') +
+  theme(aspect.ratio=1)
+
+    
+```
+
+
+```{r}
+age_difference_by_gene %>% 
+  filter(number_domains>1) %>% 
+  mutate(range= cut_width(age_dif, width=200, boundary = 0),
+         range= paste0('<', as.integer(str_match(range, ",(.*)\\]")[,2])),
+         range= ifelse(age_dif==0, 0, range),
+         range = factor(range, levels= c(0,paste0('<', seq(from = 200, to = 3600, by = 200) )))) %>% 
+  count(range) %>% 
+  ggplot(aes(range,y=n)) +
+  geom_col(fill='lightcoral')+
+  geom_text(aes(label = n), hjust=0, vjust = 0, angle = 45)+
+  theme_classic()+
+  coord_cartesian(ylim= c(0,6500) ,expand = F) +
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) + 
+  xlab('PS Age Difference') +
+  ylab('Count')+
+        theme(aspect.ratio=1)
+
+```
+
+# length of protein and number of domains  and age difference
+
+```{r}
+age_difference_by_gene %>% 
+    filter(number_domains>1) %>% 
+  mutate(range= cut_width(age_dif, width=200, boundary = 0),
+         range= paste0('<', as.integer(str_match(range, ",(.*)\\]")[,2])),
+         range= ifelse(age_dif==0, 0, range),
+         range = factor(range, levels= c(0,paste0('<', seq(from = 200, to = 3600, by = 200) )))) %>% 
+  ggplot(aes(range,y=Plen)) +
+  geom_boxplot()+
+  theme_classic()+
+  xlab('Philo Stratum Age Difference') +
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) + 
+  ylab('Protein length')+
+  coord_cartesian(expand = F) +
+      theme(aspect.ratio=1)
+
+```
+
+```{r}
+age_difference_by_gene %>% 
+  mutate(range= cut_width(age_dif, width=200, boundary = 0),
+         range= paste0('<', as.integer(str_match(range, ",(.*)\\]")[,2])),
+         range= ifelse(age_dif==0, 0, range),
+         range = factor(range, levels= c(0,paste0('<', seq(from = 200, to = 3600, by = 200) )))) %>% 
+  mutate(length_range= cut_width(Plen, width=200, boundary = 0),
+         length_range= paste0('<', as.integer(str_match(length_range, ",(.*)\\]")[,2])),
+         length_range = factor(length_range, levels= c(paste0('<', seq(from = 200, to= 36000,by = 200) )))) %>% 
+  group_by(range, length_range) %>% 
+  summarise(count=n(),
+            avg_domains=mean(number_domains)) %>% 
+  ggplot(aes(x=length_range,y=range,size=count,color=avg_domains))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) + 
+  scale_color_gradient(low = "#caf0f8",high = '#03045e') +
+  geom_point()+
+  scale_size_area(breaks = c(40,400,4000))+
+  xlab('Protein length')+
+  ylab('Delta-PS')
+```
+
+```{r}
+library(ggbreak)
+age_difference_by_gene %>% 
+  filter(number_domains>1) %>% 
+  mutate(range= cut_width(age_dif, width=200, boundary = 0),
+         range= paste0('<', as.integer(str_match(range, ",(.*)\\]")[,2])),
+         range= ifelse(age_dif==0, 0, range),
+         range = factor(range, levels= c(0,paste0('<', seq(from = 200, to = 3600, by = 200) )))) %>% 
+  ggplot(aes(x=range,y=number_domains)) +
+  geom_boxplot(fill='gray90', color='gray30')+
+  theme_classic()+
+  xlab('Philo Stratum Age Difference') +
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) + 
+  ylab('Number of domains')+
+  scale_y_continuous(expand = c(0,0))+
+      theme(aspect.ratio=1)
+
+```
+
+
+```{r}
+marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  distinct(Name,PS) %>% 
+  count(PS) %>% 
+  plot_bar(x=PS,y=n,  threshold = 700, fill='lightcoral') +
+  xlab('Philstratum of the gene')+
+      theme(aspect.ratio=1)
+
+```
+
+```{r}
+count_dom_ps <- marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  ungroup() %>% 
+  distinct(domain_accession,Domain_PS) %>% 
+  count(Domain_PS) %>% 
+  rename(PS=Domain_PS ) %>% 
+  mutate(percent=n/sum(n),
+         Class='Domain')
+
+count_gene_ps <- marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  ungroup() %>% 
+  distinct(Name,PS) %>% 
+  count(PS) %>% 
+  mutate(percent=n/sum(n),
+         Class='Gene')
+
+rbind(count_gene_ps,count_dom_ps) %>% plot_bar_groups(x=PS,y=percent,group = Class,label = n,threshold = 0.1, font_size = 2)+
+  xlab('Philo Stratum')+
+  ylab('Percent')+
+    theme(aspect.ratio=1)
+
+```
+
+```{r}
+count_dom_ps <- marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  ungroup() %>% 
+  distinct(domain_accession,Domain_Era) %>% 
+  count(Domain_Era) %>% 
+  rename(Era=Domain_Era ) %>% 
+  mutate(percent=n/sum(n),
+         Class='Domain')
+
+count_gene_ps <- marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  ungroup() %>% 
+  distinct(Name,Era) %>% 
+  count(Era) %>% 
+  mutate(percent=n/sum(n),
+         Class='Gene')
+
+rbind(count_gene_ps,count_dom_ps) %>% plot_bar_groups(x=Era,y=percent,group = Class,label = n,threshold = 0.2, font_size = 5)+
+  xlab('Era')+
+  ylab('Percent')+
+    theme(aspect.ratio=1)
+```
+
+
+```{r}
+marten_domain_PS_complexity_no_TTN_AAs__filtered
+```
+
+
+```{r}
+
+lm <-  lm( number_domains~Plen, age_difference_by_gene)
+top <-lm$residuals %>% abs() %>%  sort(decreasing = T) %>%  head(10) %>%  names() %>%  as.numeric()
+
+age_difference_by_gene %>% 
+  ggplot(aes(x=Plen,y=number_domains)) +
+  geom_point(color= 'gray40')+
+  geom_smooth(method = 'lm', color= 'gray60', linetype = "dashed", se = FALSE)+
+  theme_classic()+
+  ggrepel::geom_text_repel(data=slice(age_difference_by_gene,top ), aes(label=Gene),
+                           max.overlaps = Inf, min.segment.length = 0)+
+  xlab('Protein length') +
+  ylab('Number of domains') +
+  theme(aspect.ratio=1)+
+  scale_x_break(c(7, 17)) 
+
+   
+```
+
+
+```{r}
+
+counts <-  inner_join(marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+                                     distinct(Name,Era) %>% 
+                                     count(Era, name = 'Genes'),
+                                  marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+                                    distinct(Pair_Domain_Unique_ID,Domain_Era) %>% 
+                                    count(Domain_Era, name = 'Domains'),
+                                  by=c('Era'='Domain_Era'))
+
+plot_bar <-  function(data, x, y, threshold,fill){
+  data %>% 
+  ggplot(aes(x={{x}},y={{y}})) +
+  geom_col(fill=fill)+
+  theme_classic()+
+  xlab('Era')+
+  ylab('Counts')+
+  coord_cartesian(expand = F) +
+  geom_text(data= filter(data, {{y}} <= threshold),aes(label = {{y}}), hjust=1.1, vjust = 0.5, angle = 90, color= 'white')+
+  geom_text(data= filter(data, {{y}} > threshold),aes(label = {{y}}), hjust=-0.1, vjust = 0.5, angle = 90, color= 'gray20')
+}
+
+plot_bar_groups <-  function(data, x, y, group, label, threshold,fill, font_size){
+  data %>% 
+  ggplot(aes(x={{x}},y={{y}},group={{group}},fill={{group}})) +
+  geom_col(position=position_dodge(width = .9))+
+  theme_classic()+
+  xlab('Era')+
+  ylab('Counts')+
+  coord_cartesian(expand = F) +
+  geom_text(data= filter(data, {{y}} >= threshold),aes(label = {{label}}), hjust=1.1, vjust = 0.5, angle = 90, color= 'white', position = position_dodge(width = .9), size=font_size)+
+  geom_text(data= filter(data, {{y}} < threshold),aes(label = {{label}}), hjust=-0.1, vjust = 0.5, angle = 90, color= 'gray20', position = position_dodge(width = .9), size=font_size)
+}
+
+era_gene <- counts %>% plot_bar(x=Era, y=Genes, threshold = 1000, fill='lightcoral')   +theme(aspect.ratio=1)
+
+era_domain <-  counts %>% plot_bar(x=Era, y=Domains, threshold = 1000, fill='lightcoral')  +theme(aspect.ratio=1)
+
+era_gene
+era_domain
+
+ggarrange(era_gene,era_domain, align = 'hv', labels = 'AUTO')
+
+```
+
+```{r}
+marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+                                     distinct(doamin,Era) %>% 
+                                     count(Era, name = 'Genes')
+           
+           
+distinct(domain, )
+
+tlen 
+plen
+qlen
+```
+
+```{r}
+marten_domain_PS_complexity_no_TTN_AAs__filtered %>%  colnames()
+```
+
+
+# Co- aparición de dominios
+
+gen | dominio | n dominios por gen -1 (Es decir, compañeros)
+
+luego con esa tabla hacer el gen | median of neighbours
+
+```{r}
+marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  distinct(Gene, domain_accession, domain_description.of.target, domain_tlen) %>% 
+  group_by(Gene) %>% 
+  mutate(neighbours=  n()-1) %>% 
+  group_by(domain_accession, domain_description.of.target) %>% 
+  summarise(median=median(neighbours)) %>% 
+  ungroup() %>% 
+  count(median) %>% 
+  plot_bar(x=factor(median),y=n, threshold = 200, fill='lightcoral')	+
+  theme(aspect.ratio=1)+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1))  +
+  xlab('Median of neighbours')+
+  ylab('Counts')
+
+
+marten_domain_PS_complexity_no_TTN_AAs__filtered %>% 
+  distinct(Gene, Plen, Domain_PS, domain_accession, domain_description.of.target, domain_tlen) %>% 
+  group_by(Gene) %>% 
+  mutate(neighbours=  n()-1) %>% 
+  group_by(domain_accession) %>% 
+  mutate(median=median(neighbours)) %>% 
+  ungroup() %>% 
+  ggplot(aes(y=factor(median),x=Plen), color='lightcoral')	+
+  geom_boxplot(fill='gray90', color='gray30')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1)) +
+    ylab('Median of neighbours')+
+  xlab('Protein length')
+```
+
+```{r}
+age_difference_by_gene %>% 
+  
+```
+

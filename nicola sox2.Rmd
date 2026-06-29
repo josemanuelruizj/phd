@@ -1,0 +1,852 @@
+```{r}
+library(tidyverse)
+library(Seurat)
+
+```
+
+# Genes to extract
+
+```{r}
+genes <-  c('CNR1','CNR2','NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1', 'SOX2')
+```
+
+
+# EZE
+
+```{r}
+cell_metadata <- read_tsv('/users/genomics/josema/scdatasets/Eze_2021/meta.tsv')
+gene_expression_matrix <-  read_tsv('/users/genomics/josema/scdatasets/Eze_2021/exprMatrix.tsv') %>%
+  column_to_rownames('gene') %>% 
+  as.matrix() %>% 
+  Matrix::Matrix(sparse = T)
+```
+
+
+```{r}
+# coger solo las filas que aparezcan en genes
+EZE_genes <- gene_expression_matrix[genes, ]
+
+EZE_genes %>%  as.matrix() %>% t() %>% as.data.frame() %>% write.csv('/users/genomics/josema/final_matrix_cnr1/eze.csv')
+
+
+EZE_genes <-  read_csv('/users/genomics/josema/final_matrix_cnr1/eze.csv') %>% rename( CELL_ID= `...1`)
+cell_metadata <- read_tsv('/users/genomics/josema/scdatasets/Eze_2021/meta.tsv') %>%  select(Age_(Carnegie_Stage), Area_As_Annotated , )
+
+
+
+cortex_metadata <- read_excel("/users/genomics/josema/scdatasets/Eze_2021/41593_2020_794_MOESM3_ESM.xlsx", 
+    sheet = "5 Cortex Annotations") %>% 
+  rename(Cell=`...1`)
+
+cortex_metadata <- cortex_metadata %>% 
+  filter(Cell %in% colnames(gene_expression_matrix)) %>% 
+  arrange(factor(Cell, levels=colnames(gene_expression_matrix))) 
+
+
+inner_join(EZE_genes, cortex_metadata%>%select(Cell,Area_asannotatedduringdissection, Individual, `Cell Type`), by = c("CELL_ID" = "Cell")) %>% 
+   write.csv('/users/genomics/josema/final_matrix_cnr1/eze.csv')
+
+```
+
+# MAnno
+
+```{r}
+Manno_mouse <- readRDS('~/Manno_mouse.rds')
+```
+
+
+```{r}
+genes_mouse <-  c('Cnr1','Cnr2','Napepld','Faah','Mgll','Daglb','Dagla','Cnrip1', 'Sox2')
+Manno_genes <- LayerData(Manno_mouse, assay = "RNA", layer = "data")[genes_mouse, , drop = FALSE]
+
+manno_meta <- Manno_mouse[[]] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellID") %>% 
+  select(CellID, Subclass, Tissue, Age,Class)
+
+
+Manno_genes <- t(Manno_genes) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column("CellID")
+
+Manno_final_df <- manno_meta %>%
+  left_join(Manno_genes, by = "CellID")
+manno_genes_df <- as.data.frame(t(as.matrix(Manno_genes)))
+
+#make a directory
+if(!dir.exists('/users/genomics/josema/final_matrix_cnr1')){
+  dir.create('/users/genomics/josema/final_matrix_cnr1')
+}
+
+
+Manno_final_df %>% write_csv('/users/genomics/josema/final_matrix_cnr1/manno.csv')
+```
+
+
+
+# Dibella
+
+
+```{r}
+dibella_expression <- Matrix::readMM('/users/genomics/josema/gene_sorted-matrix.mtx')
+dibella_Metadata <- read_tsv('/users/genomics/josema/metaData_scDevSC.txt') %>% slice(-1)
+dibella_genes <-  read_tsv('/users/genomics/josema/genes(1).tsv',col_names = F)
+
+colnames(dibella_expression) <- dibella_Metadata %>% pull(NAME)
+rownames(dibella_expression) <- dibella_genes %>% pull(X1)
+
+dibella_expression_CNR1 <- dibella_expression[genes_mouse,] %>% as.matrix() %>% t() %>% as.data.frame() %>%  set_names(genes_mouse)
+dibella_UMAP <- read_tsv('/home/josema/Downloads/cluster_scDevSC.merged.umap.txt')%>% slice(-1)
+
+```
+
+```{r}
+dibella_merged <- dibella_Metadata %>%  
+  cbind(dibella_expression_CNR1)
+
+dibella_merged %>% write_csv('/users/genomics/josema/final_matrix_cnr1/dibella.csv')
+
+
+dibella_merged <- read_csv('/users/genomics/josema/final_matrix_cnr1/dibella.csv')
+```
+
+# Trevino
+
+```{r}
+##### read counts 
+count_data<- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/counts.tsv')
+count_data<- count_data %>% column_to_rownames(var="...1")
+
+##### read metadata
+metadata <- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/meta_cells.tsv')
+metadata<- metadata %>% column_to_rownames(var="...1")
+
+genes_metadata <- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/meta_genes.tsv')
+genes_metadata<- genes_metadata %>% column_to_rownames(var="...1")
+
+data <- CreateSeuratObject(counts=t(as.matrix(count_data)),
+                          # transpose of the count matrix because
+                          # we need to set the cell names as columns
+                          meta.data=metadata)
+
+data <- NormalizeData(data,
+                      normalization.method = "LogNormalize",
+                      scale.factor = 100000000)
+
+
+
+trevino_genes<-LayerData(data, assay = "RNA", layer = "data")[genes, , drop = FALSE]
+
+expr_df <- t(trevino_genes) %>%
+  as.matrix() %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("CellID")
+
+
+trevino_meta <- data[[]] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellID")
+
+final_df <- trevino_meta %>%
+  left_join(expr_df, by = "CellID")
+
+
+final_df %>% as.data.frame() %>% write_csv('/users/genomics/josema/final_matrix_cnr1/trevino.csv')
+saveRDS(data, '/users/genomics/josema/final_matrix_cnr1/trevino_seurat_normalizado.rds')
+```
+
+
+# monkey 
+
+
+
+
+
+
+```{python}
+monkey=sc.read_h5ad('/users/genomics/josema/scdatasets/monkey/monkey.h5ad')
+monkey
+monkey.X
+monkey.obs_names
+monkey.var_names
+
+pd.DataFrame(monkey.var_names, columns=["gene"]).to_csv("/users/genomics/josema/monkey_var_names.csv", index=False)
+
+monkey[monkey.var_names== 'ENSG00000118432']
+monkey
+monkey.layers
+monkey[monkey.var_names[ 'ENSG00000118432']]
+monkey[:,['ENSG00000118432','ENSG00000188822','']]
+cnr1_monkey=monkey[:,["ENSG00000118432","ENSG00000188822",'ENSG00000161048','ENSG00000117480','ENSG00000165591','ENSG00000074416','ENSG00000164535','ENSG00000134780','ENSG00000119865','ENSG00000134595']]
+cnr1_monkey.layers['normalized']=cnr1_monkey.X
+cnr1_df=cnr1_monkey.to_df(layer='normalized')
+cnr1_df.to_csv('/users/genomics/josema/Monkey_cnr1cascade.csv', index=False)
+cnr1_df.to_csv('Monkey_cnr1cascade_index.csv', index=True)
+cnr1_monkey.var12G
+cnr1_monkey.obs
+cnr1_monkey.obs.to_csv('metadata_monkey.csv', index=True)
+quit
+quit()
+
+"CNR1","CNR2",'NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1','SOX2'
+
+"ENSG00000118432","ENSG00000188822",'ENSG00000161048','ENSG00000117480','ENSG00000165591','ENSG00000074416','ENSG00000164535','ENSG00000134780','ENSG00000119865','ENSG00000134595'
+```
+
+# Braun
+
+```{python}
+import h5py as h5
+import numpy as np
+
+monkey=h5.File('/users/genomics/josema/scdatasets/HumanFetalBrainPool.h5')
+monkey
+
+#<HDF5 file "HumanFetalBrainPool.h5" (mode r)>
+
+monkey.keys()
+
+#<KeysViewHDF5 ['shoji']>
+
+monkey=monkey['shoji']
+
+list(monkey)
+#['Accession', 'Age', 'AnnotationDefinition', 'AnnotationDescription', 
+#'AnnotationName', 'AnnotationPosterior', 'CellClass', 'CellCycleFraction', 'CellID', 'Chemistry', 
+#Chromosome', 'Class', 'ClusterID', 'Clusters', 'Donor', 'DoubletFlag', 'DoubletScore', 'DropletClass',
+#'Embedding', 'End', 'Enrichment', 'Expression', 'Factors', 'Gene', 'GeneNonzeros', 'GeneTotalUMIs',
+#'Linkage', 'Loadings', 'ManifoldIndices', 'ManifoldRadius', 'ManifoldWeights', 'MeanAge', 'MeanCellCycle',
+#' 'MeanDoubletScore', 'MeanExpression', 'MeanTotalUMI', 'MitoFraction', 'NCells', 'NGenes', 'Nonzeros',
+#'  'OverallTotalUMIs', 'PrevClusters', 'Recipe', 'Region', 'SampleID', 'SelectedFeatures', 'Sex', 'Species',
+#'   'Start', 'StdevExpression', 'Subdivision', 'Subregion', 'Tissue', 'TopLevelCluster', 'TotalUMIs', 'Trinaries',
+#'    'UnsplicedFraction', 'ValidCells', 'ValidGenes']
+
+pd.DataFrame(np.array(monkey['Accession']))
+pd.DataFrame(np.array(monkey['Gene']))
+
+pd.DataFrame(np.array(monkey['Gene']).astype(str))
+
+import numpy as np
+import pandas as pd
+
+target_genes = ['CNR1','CNR2','NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1','SOX2']
+
+genes = np.array(monkey['Gene']).astype(str)
+cells = np.array(monkey['CellID']).astype(str)
+
+gene_to_idx = {g: i for i, g in enumerate(genes)}
+
+found_genes = [g for g in target_genes if g in gene_to_idx]
+missing_genes = [g for g in target_genes if g not in gene_to_idx]
+
+idx = [gene_to_idx[g] for g in found_genes]
+
+# ordenar para h5py
+idx_sorted = sorted(idx)
+
+# extraer
+expr_subset = monkey['Expression'][:, idx_sorted]
+
+# DataFrame temporal con el orden del array extraído
+cells = np.array(monkey['CellID']).astype(str)
+
+expr_df = pd.DataFrame(
+    expr_subset,
+    index=cells,
+    columns=[genes[i] for i in idx_sorted]
+)
+
+# reordenar al orden original que tú pediste
+expr_df = expr_df.reindex(found_genes)
+
+print("Found:", found_genes)
+print("Missing:", missing_genes)
+
+
+embedding = np.array(monkey['Embedding'])
+
+meta = pd.DataFrame({
+    'CellID': cells,
+    'Subregion': np.array(monkey['Subregion']).astype(str),
+    'Tissue': np.array(monkey['Tissue']).astype(str),
+    'Age': np.array(monkey['Age']).astype(str),
+    'CellClass': np.array(monkey['CellClass']).astype(str)}, index=cells)
+
+for i in range(embedding.shape[1]):
+    meta[f'Embedding{i+1}'] = embedding[:, i]
+
+
+final_df = pd.concat([expr_df, meta], axis=1)
+
+final_df.to_csv("/users/genomics/josema/final_matrix_cnr1/BRAUN.csv")
+pd.DataFrame(np.array(monkey['Expression']))
+monkey['Expression'].shape
+```
+
+## reanotacion de xoel
+
+```{r}
+annotation_xoel <-  read.csv('/users/genomics/josema/CellInfo.annotated.csv') %>% select(CellID,LongName)
+
+
+read_csv("/users/genomics/josema/final_matrix_cnr1/BRAUN.csv") %>% 
+  left_join(annotation_xoel, by = c("...1"="CellID")) %>% 
+  write_csv('/users/genomics/josema/final_matrix_cnr1/BRAUN_annotated.csv')
+```
+
+# Reanotacion general
+
+## crear macro tabla 
+
+```{r}
+library(tidyverse)
+EZE <- read_csv('/users/genomics/josema/final_matrix_cnr1/eze.csv')
+MANNO <- read_csv('/users/genomics/josema/final_matrix_cnr1/manno.csv')
+DIBELLA <- read_csv('/users/genomics/josema/final_matrix_cnr1/dibella.csv')
+TREVINO <- read_csv('/users/genomics/josema/final_matrix_cnr1/trevino.csv')
+MICALI <- read_csv('/users/genomics/josema/final_matrix_cnr1/monkey.csv')
+BRAUN <- read_csv('/users/genomics/josema/final_matrix_cnr1/BRAUN_annotated.csv')
+
+# Añadir una columna con el nombre del dataset en cada objeto 
+
+EZE <- EZE %>% mutate(Dataset = "EZE")
+MANNO <-  MANNO %>% mutate(Dataset = "MANNO")
+DIBELLA <- DIBELLA %>% mutate(Dataset = "DIBELLA")
+TREVINO <- TREVINO %>% mutate(Dataset = "TREVINO")
+MICALI <- MICALI %>% mutate(Dataset = "MICALI")
+BRAUN <- BRAUN %>% mutate(Dataset = "BRAUN")
+
+```
+
+
+```{r}
+# Put colnames in uppercase for all datasets
+EZE <- EZE %>% rename_with(toupper)
+MANNO <-  MANNO %>% rename_with(toupper)
+DIBELLA <- DIBELLA %>% rename_with(toupper)
+TREVINO <- TREVINO %>% rename_with(toupper)
+MICALI <- MICALI %>% rename_with(toupper)
+BRAUN <- BRAUN %>% rename_with(toupper)
+```
+
+
+```{r}
+# select columns that are interesting
+#MANNO  select(X, Subclass, Tissue, Age) y los genes 
+# unificar nombres importantes entre datasets CELL_ID igual, CLASS, SUBCLASS, TISSUE, AGE, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2
+MANNO <- MANNO %>% select(DATASET,CELLID, CLASS, SUBCLASS, TISSUE, AGE, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2)
+
+# En dibella AGE= ORIG_IDENT , SUBCLASS = NA, CLASS= NEW_CELLTYPE   , TISSUE =ORGAN__ONTOLOGY_LABEL, , CELLID = CELLID NAME
+DIBELLA <- DIBELLA %>% mutate(SUBCLASS=NA) %>% select(DATASET, CELLID= NAME, CLASS=NEW_CELLTYPE, SUBCLASS, TISSUE=ORGAN__ONTOLOGY_LABEL, AGE=ORIG_IDENT, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2)
+
+
+# MICALI
+
+MICALI <- MICALI  %>% select(DATASET, CELLID=OBSERVATIONS, CLASS=SUBCLASS, SUBCLASS=SUBTYPE, TISSUE=AREA, AGE=RAWAGE, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2)
+
+# EZE
+
+EZE <- EZE %>% mutate(SUBCLASS= NA) %>% select(DATASET, CELLID= CELL_ID, CLASS= `CELL TYPE`, SUBCLASS, TISSUE= AREA_ASANNOTATEDDURINGDISSECTION, AGE= INDIVIDUAL, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2)
+
+# BRAUN
+BRAUN <- BRAUN%>% mutate(SUBCLASS= NA, AGE=as.character(AGE))  %>% select(DATASET, CELLID= `...1`, CLASS= LONGNAME, SUBCLASS, TISSUE= TISSUE, AGE= AGE, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2)
+
+BRAUN <- BRAUN%>% mutate(SUBCLASS= NA, AGE=as.character(AGE))
+# TREVINO
+
+TREVINO <- TREVINO %>% 
+  mutate(
+    CLASS = if_else(
+      is.na(`FINAL.LABEL`),
+      `FINAL TYPE`,
+      `FINAL.LABEL`
+    ),
+    SUBCLASS = NA
+  ) %>% 
+  select(
+    DATASET,
+    CELLID = CELLID,
+    CLASS,
+    SUBCLASS,
+    TISSUE = LINEAGE,
+    AGE = AGE,
+    CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2
+  )
+# unir todo en una macro tabla
+macro_table <- bind_rows(MANNO, DIBELLA, MICALI, EZE, BRAUN, TREVINO)
+
+# guardar macro tabla
+write_csv(macro_table, '/users/genomics/josema/final_matrix_cnr1/macro_table.csv')
+macro_table <- read_csv('/users/genomics/josema/final_matrix_cnr1/macro_table.csv')
+
+# Create a vector with the names of the datasets
+datasset_order <- c("MANNO", "DIBELLA", "MICALI", "EZE", "BRAUN", "TREVINO")
+
+
+# count number of cells per dataset per metadata y ordenar por orden de dataset, Class, subclass y tissue 
+
+
+
+count(macro_table, DATASET, CLASS, SUBCLASS, TISSUE) %>%
+  arrange(factor(DATASET, levels = datasset_order), CLASS, SUBCLASS, TISSUE) %>%
+  writexl::write_xlsx('/users/genomics/josema/final_matrix_cnr1/count_metadata.xlsx')
+
+
+
+#read xlsx of the file that includes the reannotation of celltypes according to the file of counts  /users/genomics/josema/count_definitivo.xlsx
+
+REANOTACION <- readxl::read_xlsx('/users/genomics/josema/final_matrix_cnr1/Copy of FINAL_Cell_Grouping_NM.xlsx') %>% select(DATASET, CLASS, SUBCLASS, TISSUE, n, Common_name)
+
+
+# ahora haz un inner join entre la macro tabla y la reanotacion para añadir la columna de common name a la macro tabla
+final_macro_table <- macro_table %>% 
+  left_join(REANOTACION, by = c("DATASET", "CLASS", "SUBCLASS", "TISSUE")) %>% 
+  select(DATASET, CELLID, CLASS, SUBCLASS, TISSUE, AGE, CNR1, CNR2, NAPEPLD, FAAH, MGLL, DAGLB, DAGLA, CNRIP1, SOX2, Common_name)
+final_macro_table %>% write_csv('/users/genomics/josema/final_matrix_cnr1/final_macro_table.csv')
+
+
+```
+
+# Plots
+
+```{r}
+
+# check the number of cells with common name == Dorsal_NSC and Ventral NSC with SOX2 > 0 in the final macro table. Plot the distributios per dataset of the dorsal an ventral sox2 + and -.   after that Rename those cells as dorsalnsc(sox2+) or ventralnsc (sox2+)
+
+count(final_macro_table, DATASET, Common_name, SOX2 > 0) %>% 
+  filter(Common_name %in% c("Dorsal_NSC", "Ventral_NSC")) %>% 
+  arrange(factor(DATASET, levels = datasset_order), Common_name, `SOX2 > 0`) %>% 
+  write_csv('/users/genomics/josema/final_matrix_cnr1/count_sox2_dorsal_ventral.csv')
+
+plot_data <- final_macro_table %>% 
+  filter(Common_name %in% c("Dorsal_NSC", "Ventral_NSC")) %>% 
+  mutate(SOX2_status = ifelse(SOX2 > 0, "SOX2+", "SOX2-")) %>% 
+  group_by(DATASET, Common_name, SOX2_status) %>% 
+  summarise(n = n()) %>% 
+  ungroup()
+ggplot(plot_data, aes(x = DATASET, y = n, fill = SOX2_status)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Common_name) +
+  labs(title = "Distribution of SOX2+ and SOX2- cells in Dorsal and Ventral NSCs across datasets",
+       x = "Dataset",
+       y = "Number of Cells",
+       fill = "SOX2 Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave('/users/genomics/josema/final_matrix_cnr1/sox2_dorsal_ventral_distribution.png', width = 10, height = 6)
+final_macro_table <- final_macro_table %>% 
+  mutate(Common_name = case_when(
+    Common_name == "Dorsal_NSC" & SOX2 > 0 ~ "Dorsal_NSC(SOX2+)",
+    Common_name == "Dorsal_NSC" & SOX2 <= 0 ~ "Dorsal_NSC(SOX2-)",
+    Common_name == "Ventral_NSC" & SOX2 > 0 ~ "Ventral_NSC(SOX2+)",
+    Common_name == "Ventral_NSC" & SOX2 <= 0 ~ "Ventral_NSC(SOX2-)",
+    TRUE ~ Common_name
+  ))
+```
+
+
+
+```{r}
+#Create a tile plot with the number of cells per dataset (x axis) and common name (y axis) and fill the tiles with the number of cells. Order the datasets in the x axis by the order in the datasset_order vector and order the common names in the y axis by the number of cells in each common name across all datasets. Save the plot as a png file.
+
+plot_data <- final_macro_table %>% 
+  group_by(Common_name) %>% 
+  summarise(total_cells = n()) %>% 
+  arrange(desc(total_cells)) %>% 
+  pull(Common_name)
+
+final_macro_table <- final_macro_table %>%
+  mutate(Common_name = factor(Common_name, levels = plot_data),
+         DATASET = factor(DATASET, levels = datasset_order))
+
+# potea el numero de celulas por dataset y common name en un tile plot poniendo el numero de celulas en cada tile y norrmalizando min max por cada dataset el color
+df_plot <- final_macro_table %>%
+  group_by(DATASET, Common_name) %>%
+  summarise(n = sum(n, na.rm = TRUE), .groups = "drop") %>%
+  group_by(DATASET) %>%
+  mutate(
+    n_scaled = ifelse(
+      max(n, na.rm = TRUE) == min(n, na.rm = TRUE),
+      1,
+      (n - min(n, na.rm = TRUE)) / (max(n, na.rm = TRUE) - min(n, na.rm = TRUE))
+    )
+  ) %>%
+  ungroup()
+
+ggplot(df_plot, aes(x = DATASET, y = Common_name)) +
+  geom_tile(aes(fill = n_scaled), color = "white") +
+  geom_text(aes(label = n), color = "black", size = 3) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Number of cells per dataset and common name",
+    x = "Dataset",
+    y = "Common name",
+    fill = "Min-max\nwithin dataset"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(
+  '/users/genomics/josema/final_matrix_cnr1/cells_per_dataset_common_name.png',
+  width = 12,
+  height = 8
+)
+```
+
+```{r}
+# haz una tabla resumen de que edades tenemos para cada dataset para cada common celltype
+
+resumen <- final_macro_table %>%
+  group_by(DATASET, Common_name) %>%
+  summarise(ages = paste(unique(AGE), collapse = ", "), .groups = "drop") %>%
+  arrange(factor(DATASET, levels = datasset_order), Common_name)
+write_tsv(resumen, '/users/genomics/josema/final_matrix_cnr1/ages_per_dataset_common_name.tsv')
+```
+
+# plot CNR1 expression in celltypes
+
+```{r}
+#1. Estructurar las edades de losdistintos dataset para que estén bien ordenadas. Unir las dos primeras letras de un dataset con su edad, para que no haya repeticiones de edades
+
+final_macro_table <- final_macro_table %>%
+  mutate(AGE_combined = paste(substr(DATASET, 1, 2), AGE, sep = "_"))
+
+distinct(final_macro_table, DATASET, AGE_combined) %>%
+  write_csv('/users/genomics/josema/final_matrix_cnr1/ages_per_dataset.csv')
+
+
+df_plot <- final_macro_table %>% 
+  mutate(
+    AGE_combined = case_when(
+      AGE_combined %in% c("DI_E18_S1", "DI_E18_S3") ~ "DI_E18",
+      AGE_combined %in% c("DI_P1", "DI_P1_S1", "DI_P4") ~ "DI_postpartum",
+      AGE_combined %in% c("EZ_CS22","EZ_CS22_2") ~ "EZ_CS22",
+      AGE_combined %in% c("EZ_CS15","EZ_CS15_2") ~ "EZ_CS15",
+      AGE_combined %in% c("EZ_CS14","EZ_CS14_3") ~ "EZ_CS14",
+      TRUE ~ AGE_combined
+    )
+  )
+
+
+
+age_order_dataset <- c(
+  # MANNO
+  "MA_e7.0","MA_e8.0","MA_e8.5","MA_e9.0","MA_e10.0","MA_e11.0",
+  "MA_e12.0","MA_e12.5","MA_e13.0","MA_e13.5","MA_e14.0","MA_e14.5",
+  "MA_e15.0","MA_e15.5","MA_e16.0","MA_e16.25","MA_e16.5",
+  "MA_e17.0","MA_e17.5","MA_e18.0",
+
+  # DIBELLA (fusionado)
+  "DI_E10","DI_E11","DI_E12","DI_E13","DI_E14","DI_E15","DI_E16","DI_E17",
+  "DI_E18",
+  "DI_postpartum",
+
+  # MICALI
+  "MI_E37","MI_E42","MI_E43","MI_E54","MI_E62","MI_E64",
+  "MI_E77","MI_E78","MI_E93","MI_E110",
+
+  # EZE (CS stages)
+  "EZ_CS12","EZ_CS13","EZ_CS14",
+  "EZ_CS15","EZ_CS19","EZ_CS20",
+  "EZ_CS22",
+
+  # BRAUN
+  "BR_5","BR_5.5","BR_6","BR_6.6","BR_6.7","BR_6.9",
+  "BR_7","BR_7.5","BR_8","BR_8.1","BR_8.5",
+  "BR_9.2","BR_9.5","BR_10","BR_11.5","BR_12","BR_13","BR_14",
+
+  # TREVINO
+  "TR_pcw16","TR_pcw20","TR_pcw21","TR_pcw24"
+)
+```
+
+```{r}
+
+# 3. Resumen para CNR1
+plot_data <- df_plot %>%
+  filter(Common_name !='Other') %>%
+  group_by(DATASET, AGE_combined, Common_name) %>%
+  summarise(
+    N = n(),
+    Avg = mean(CNR1, na.rm = TRUE),
+    Percent = 100 * sum(CNR1 > 0, na.rm = TRUE) / n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    AGE_combined = factor(AGE_combined, levels = age_order_dataset)
+  ) %>%
+  arrange(DATASET, AGE_combined, Common_name)
+
+plot_data <- plot_data %>%  group_by(DATASET) %>%  
+  mutate(norm=(Avg - min(Avg, na.rm = TRUE)) / (max(Avg, na.rm = TRUE)))
+
+# 4. Completar combinaciones ausentes para que salgan tiles en blanco
+all_combinations <- expand.grid(
+  DATASET = unique(plot_data$DATASET),
+  AGE_combined = age_order_dataset,
+  Common_name = unique(plot_data$Common_name),
+  stringsAsFactors = FALSE
+) %>%
+  as_tibble()
+
+plot_data_complete <- all_combinations %>%
+  left_join(plot_data, by = c("DATASET", "AGE_combined", "Common_name")) %>%
+  mutate(
+    AGE_combined = factor(AGE_combined, levels = age_order_dataset)
+  )
+
+# write csv for plot_data_complete
+write_csv(plot_data, '/users/genomics/josema/final_matrix_cnr1/plot_data_complete.csv')
+
+#pivot longer de plotdatacompete para tener una columna con el tipo de medida (Avg, Percent) y otra con el valor, para poder hacer un facet wrap por tipo de medida
+
+long_plot_data <- plot_data_complete %>%
+  pivot_longer(cols = c(Avg, Percent), names_to = "Measure", values_to = "Value") %>%
+  mutate(
+    AGE_combined = factor(AGE_combined, levels = age_order_dataset),
+    Measure = factor(Measure, levels = c("Avg", "Percent"))
+  )
+
+plot_data_complete
+# 5. Plot de expresión media
+p_avg <- ggplot(plot_data_complete, aes(x = AGE_combined, fill = Avg)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  facet_wrap(Common_name~ DATASET, scales = "free_x", nrow = 1) +
+  scale_fill_gradient(low = "white", high = "steelblue", na.value = "grey95") +
+  labs(
+    title = "CNR1 average expression",
+    x = "Age",
+    y = "Common name",
+    fill = "Mean expr"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+
+# 8. Guardar
+ggsave(
+  "/users/genomics/josema/final_matrix_cnr1/CNR1_double_tileplot.png",
+  p_avg,
+  width = 22,
+  height = 12,
+  dpi = 300
+)
+
+final_plot
+```
+
+```{r}
+nm <- read.xlsx('/home/josema/Downloads/reanotacion_nicolamicali.xlsx')
+ot <- read.xlsx('/home/josema/Downloads/count_metadata.xlsx')
+colnames(nm)
+colnames(ot)
+joined <- left_join(ot,nm)
+
+#rewrite NAs in joined in common name with UNDEFINED
+joined <- joined %>% mutate(Common_name = ifelse(is.na(Common_name), "UNDEFINED", Common_name))
+
+#write excel and load the library writexl 
+library(writexl)
+
+write_xlsx(joined, '/home/josema/Downloads/count_metadata_reanotada.xlsx')
+```
+
+# summary table
+```{r}
+
+genes <- c(
+  "CNR1", "CNR2", "NAPEPLD", "FAAH", "MGLL",
+  "DAGLB", "DAGLA", "CNRIP1", "SOX2"
+)
+
+final_macro_table <- 
+  read_csv('/users/genomics/josema/final_matrix_cnr1/final_macro_table.csv')
+
+final_macro_table <-final_macro_table %>% 
+  mutate(
+    AGE_combined = case_when(
+      AGE_combined %in% c("DI_E18_S1", "DI_E18_S3") ~ "DI_E18",
+      AGE_combined %in% c("DI_P1", "DI_P1_S1", "DI_P4") ~ "DI_postpartum",
+      AGE_combined %in% c("EZ_CS22","EZ_CS22_2") ~ "EZ_CS22",
+      AGE_combined %in% c("EZ_CS15","EZ_CS15_2") ~ "EZ_CS15",
+      AGE_combined %in% c("EZ_CS14","EZ_CS14_3") ~ "EZ_CS14",
+      TRUE ~ AGE_combined
+    )
+  )
+
+final_macro_long <- final_macro_table %>%
+  pivot_longer(
+    cols = all_of(genes),
+    names_to = "gene",
+    values_to = "expression"
+  )
+
+summary_table <- final_macro_long %>% 
+  group_by(DATASET, Common_name, gene,AGE_combined ) %>%
+  summarise(
+    n_cells = n(),
+    avg_expression = mean(expression, na.rm = TRUE),
+    percent_expressing = 100 * sum(expression > 0, na.rm = TRUE) / n(),
+    .groups = "drop"
+  )
+
+summary_table_plot <-  summary_table %>%  pivot_longer(cols = c(avg_expression, percent_expressing), names_to = "metric", values_to = "value") %>%
+  mutate(gene_metric=paste(gene, metric, sep = "_")) %>% 
+  select(-gene, -metric) %>%
+  pivot_wider(names_from = gene_metric, values_from = value)
+
+#write excel of summary table plot
+library(writexl)
+write_xlsx(summary_table_plot, '/users/genomics/josema/final_matrix_cnr1/summary_table_plot.xlsx')
+
+
+final_macro_table %>%
+  filter(
+    DATASET == "MANNO",
+    Common_name == "Glut_NEU",
+    AGE_combined == "MA_e10.0"
+  ) %>%
+  select(where(is.numeric)) %>%
+  colMeans(na.rm = TRUE)
+
+```
+
+```{r}
+
+library(tidyverse)
+#read final macro table 
+final_macro_table <- readxl::read_xlsx('/users/genomics/josema/final_matrix_cnr1/summary_table_plot.xlsx')
+
+
+
+
+#plot number of cells per dataset per celltype per age 
+library(dplyr)
+library(ggplot2)
+
+plot_data <- final_macro_table %>%
+  group_by(DATASET, Common_name, AGE_combined, n_cells) %>% 
+  summarise(
+    .groups = "drop"
+  ) %>% 
+  mutate(
+    AGE_combined = factor(AGE_combined, levels = age_order_dataset),
+    Common_name = ifelse(Common_name == "Astro", "ASTRO", Common_name),
+    Common_name = ifelse(is.na(Common_name), "Other", Common_name),
+    n_cells_category = case_when(
+      n_cells > 100 ~ ">100",
+      n_cells > 50  ~ ">50",
+      n_cells > 25  ~ ">25",
+      TRUE          ~ "≤25"
+    ),
+    n_cells_category = factor(
+      n_cells_category,
+      levels = c("≤25", ">25", ">50", ">100")
+    )
+  )
+
+ggplot(plot_data, aes(
+  x = AGE_combined,
+  y = Common_name,
+  fill = n_cells_category
+)) +
+  geom_tile(color = "white") +
+  facet_wrap(~ DATASET, scales = "free_x") +
+  labs(
+    title = "Number of cells per dataset, cell type and age",
+    x = "Age",
+    y = "Cell type",
+    fill = "Number of cells"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )+
+  scale_fill_manual(
+    values = c(
+      "≤25"  = "#deebf7",
+      ">25"  = "#9ecae1",
+      ">50"  = "#3182bd",
+      ">100" = "#08519c"
+    )
+  ) +
+
+ggsave(
+  "/users/genomics/josema/final_matrix_cnr1/number_cells_per_dataset_celltype_age.png",
+  width = 12,
+  height = 8
+)
+
+
+
+
+plot_data <- final_macro_table %>% group_by(DATASET, Common_name ,AGE_combined, n_cells) %>% summarise(enough_cells = n_cells > 50, AGE_combined = factor(AGE_combined, levels = age_order_dataset) ) %>% mutate(Common_name = ifelse(Common_name == 'Astro', "ASTRO", Common_name )) %>% mutate(Common_name = ifelse(is.na(Common_name), "Other", Common_name )) 
+
+ggplot(plot_data, aes( x = AGE_combined, y = Common_name, fill = enough_cells )) + geom_tile(color = "white") + facet_wrap(~ DATASET, scales = "free_x") + labs( title = "Number of cells per dataset, cell type and age", x = "Age", y = "Cell type", fill = "n cells > 50" ) + theme_minimal() + theme( axis.text.x = element_text(angle = 45, hjust = 1) )
+
+ggsave( "/users/genomics/josema/final_matrix_cnr1/number_cells_per_dataset_celltype_age.png", width = 12, height = 8 )
+       
+age_order_dataset <- c(
+  # MANNO
+  "MA_e7.0","MA_e8.0","MA_e8.5","MA_e9.0","MA_e10.0","MA_e11.0",
+  "MA_e12.0","MA_e12.5","MA_e13.0","MA_e13.5","MA_e14.0","MA_e14.5",
+  "MA_e15.0","MA_e15.5","MA_e16.0","MA_e16.25","MA_e16.5",
+  "MA_e17.0","MA_e17.5","MA_e18.0",
+
+  # DIBELLA (fusionado)
+  "DI_E10","DI_E11","DI_E12","DI_E13","DI_E14","DI_E15","DI_E16","DI_E17",
+  "DI_E18",
+  "DI_postpartum",
+
+  # MICALI
+  "MI_E37","MI_E42","MI_E43","MI_E54","MI_E62","MI_E64",
+  "MI_E77","MI_E78","MI_E93","MI_E110",
+
+  # EZE (CS stages)
+  "EZ_CS12","EZ_CS13","EZ_CS14",
+  "EZ_CS15","EZ_CS19","EZ_CS20",
+  "EZ_CS22",
+
+  # BRAUN
+  "BR_5","BR_5.5","BR_6","BR_6.6","BR_6.7","BR_6.9",
+  "BR_7","BR_7.5","BR_8","BR_8.1","BR_8.5",
+  "BR_9.2","BR_9.5","BR_10","BR_11.5","BR_12","BR_13","BR_14",
+
+  # TREVINO
+  "TR_pcw16","TR_pcw20","TR_pcw21","TR_pcw24"
+)
+```
+
+```{r}
+final_data <- final_macro_table %>%
+  group_by(DATASET, Common_name, AGE_combined) %>%
+  summarise(
+    n_cells = n(),
+    avg_CNR1 = mean(CNR1, na.rm = TRUE),
+    percent_CNR1 = 100 * sum(CNR1 > 0, na.rm = TRUE) / n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    AGE_combined = factor(AGE_combined, levels = age_order_dataset)
+  ) %>%
+  arrange(DATASET, AGE_combined, Common_name)
+
+final_macro_table %>% 
+  mutate(
+    AGE_combined = case_when(
+      AGE_combined %in% c("DI_E18_S1", "DI_E18_S3") ~ "DI_E18",
+      AGE_combined %in% c("DI_P1", "DI_P1_S1", "DI_P4") ~ "DI_postpartum",
+      AGE_combined %in% c("EZ_CS22","EZ_CS22_2") ~ "EZ_CS22",
+      AGE_combined %in% c("EZ_CS15","EZ_CS15_2") ~ "EZ_CS15",
+      AGE_combined %in% c("EZ_CS14","EZ_CS14_3") ~ "EZ_CS14",
+      TRUE ~ AGE_combined
+    )
+  )
+```
+

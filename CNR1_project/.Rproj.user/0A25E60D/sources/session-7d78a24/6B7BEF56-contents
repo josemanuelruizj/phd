@@ -1,0 +1,1275 @@
+---
+title: "plots final nicola"
+author: "Josema"
+date: "2025-03-12"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+```
+
+# Load datasets and merge all
+
+```{r}
+
+# Manno mouse metadata count matrix
+Manno_mouse_meta_count <- read.csv('/home/josema/Downloads/manno_metadata.csv') %>%  
+  select(X, Subclass, Tissue, Age) %>% 
+  count(Subclass, Tissue, Age) %>% 
+  arrange(Subclass, Tissue, Age) 
+
+writexl::write_xlsx(Manno_mouse_meta_count, '/home/josema/Downloads/Def_counts/Manno_count_def.xlsx')
+
+
+# la manno
+
+CNR1_manno <- read.csv('/home/josema/Downloads/manno_Cannabinoids.csv')
+Manno_mouse_meta <- read.csv('/home/josema/Downloads/manno_metadata.csv') %>%  select(X, Subclass, Tissue)
+
+
+age_order_manno=c('e7.0', 'e8.0', 'e8.5', 'e9.0', 'e10.0',
+  'e11.0', 'e12.0', 'e12.5', 'e13.0','e13.5',
+  'e14.0', 'e14.5', 'e15.0','e15.5', 'e16.0',
+  'e16.25','e16.5', 'e17.0', 'e17.5','e18.0')
+
+manno_coordinates <- read_csv('~/Downloads/Manno_UMAP_coord.csv') 
+Manno <-   CNR1_manno %>% 
+  inner_join(Manno_mouse_meta, by=c('Cell_Id'='X')) %>% 
+  inner_join(manno_coordinates, by=c('Cell_Id' = '...1')) %>% 
+  mutate(com_class= case_when(Class == 'Neuron' ~ 'NEU',
+                              Class == 'Neuroblast' ~ 'IPC',
+                              Class %in% c('Radial glia', 'Neural tube','Neural crest') ~ 'PROG',
+                              Class %in% c('Oligodendrocyte') ~ 'OLIG',
+                              TRUE ~ 'Other'),
+         Age=factor(Age, levels=age_order_manno)) %>% 
+  mutate(UMAP1=umap_1, UMAP2=umap_2) %>% 
+  rename(Area=Tissue) %>% 
+  pivot_longer(cols = -c(Cell_Id, Age, Class, Subclass, com_class, Area, UMAP1, UMAP2), names_to = 'Gene', values_to ='Expression')
+
+
+
+Manno %>% 
+  filter(Gene=='Cnr1') %>% 
+  ggplot(aes(x = UMAP1, y = UMAP2, z = Expression)) +
+  stat_summary_hex(bins = 50, fun = mean) +
+scale_fill_viridis_c()+  theme_void()+
+  theme(aspect.ratio = 1)
+  
+
+Manno %>% 
+  filter(Gene=='Cnr1') %>% 
+  ggplot(aes(x = UMAP1, y = UMAP2, z = Expression)) +
+  stat_summary_hex(bins = 50, fun = mean) +
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+ theme_void()+
+  theme(aspect.ratio = 1)
+
+Manno %>% 
+  filter(Gene=='Cnr1') %>% 
+  ggplot(aes(x = UMAP1, y = UMAP2, color = Expression)) +
+  geom_point(size=0.01) +
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_void()+
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+# di bella
+
+dibella_merged <- read_csv('~/Downloads/dibella_expression_CNR1_related.csv') 
+
+dibella_merged <- dibella_merged%>% 
+  mutate(com_class= case_when(New_cellType %in% c('CThPN',
+                                       'DL CPN','DL_CPN_1','DL_CPN_2',
+                                       'Immature neurons','Interneurons',
+                                       'Layer 4','Layer 6b','Migrating neurons',
+                                       'SCPN','UL CPN') ~ 'NEU',
+                              New_cellType%in% c('Apical progenitors','Cycling glial cells') ~ 'PROG',
+                              New_cellType%in% c('Intermediate progenitors') ~ 'IPC',
+                              New_cellType%in% c('Oligodendrocytes') ~ 'OLIG',
+                              TRUE ~ 'Other'),
+         UMAP1=as.numeric(X),
+         UMAP2=as.numeric(Y),
+         Subclass=NA) %>% 
+  rename(Cell_Id='NAME',
+         Age='orig_ident',
+         Class='New_cellType',
+         Area='organ__ontology_label') %>% 
+  select(Cell_Id, Age, Class,Subclass ,com_class, Area, UMAP1, UMAP2,Cnr1, Cnr2, Napepld, Faah, Mgll, Daglb, Dagla, Cnrip1) %>% 
+  pivot_longer(cols=-c(Cell_Id, Age, Area, Class,Subclass, com_class, Area, UMAP1, UMAP2), names_to = 'Gene', values_to ='Expression' )
+```
+
+
+```{r}
+# dibella metadata count matrix
+dibella_merged <- read_csv('~/Downloads/dibella_expression_CNR1_related.csv') %>% 
+  select(NAME, New_cellType, organ__ontology_label, orig_ident) %>% 
+  count(New_cellType, organ__ontology_label, orig_ident) %>% 
+  arrange(New_cellType, organ__ontology_label, orig_ident) 
+
+writexl::write_xlsx(dibella_merged, '/home/josema/Downloads/Def_counts/dibella_count_def.xlsx')
+
+```
+
+```{r}
+# micali
+
+metadata_monkey <- read_csv('/home/josema/Downloads/metadata_monkey.csv')
+CNR1_monkey <- read_csv('/home/josema/Downloads/Monkey_cnr1cascade_index.csv')%>%  setNames(c('observations',"CNR1","CNR2",'NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1'))
+
+metadata_filtered <- metadata_monkey %>%  select(UMAP_1,UMAP_2,orig.ident, observations, subclass, subtype)
+
+age_oder_monkey <- c('E37','E42','E43','E54','E62','E64','E77','E78','E93','RMB691','RMB683')  
+
+monkey <- metadata_monkey %>% inner_join(CNR1_monkey) %>% 
+  mutate(com_class= case_when(subclass %in% c('Excitatory neurons','Inhibitory neurons', 'Early subtypes') ~ 'NEU',
+                              subclass%in% c('Patterning centers') ~ 'PROG',
+                              subclass%in% c('enIPC','inIPC') ~ 'IPC',
+                              subclass%in% c('dorsal NSC','GE NSC') ~ 'PROG',
+                              subclass%in% c('OPC-Oligo') ~ 'OLIG',
+                              TRUE ~ 'Other'),
+         Age=factor(orig.ident, levels=age_oder_monkey),
+         Subclass=subtype) %>% 
+  rename(Cell_Id='observations',
+         Class='subclass',
+         UMAP1='UMAP_1',
+         UMAP2='UMAP_2',
+         Area='area') %>% 
+  select(Cell_Id, Age, Cell_Id, Age, Class,Subclass, com_class,Area, UMAP1, UMAP2,CNR1, CNR2, NAPEPLD, FAAH, FAAH2, MGLL, DAGLB, DAGLA, CNRIP1) %>% 
+  pivot_longer(-c(Cell_Id, Age, Cell_Id, Age, Class,Subclass, com_class,Area, UMAP1, UMAP2), names_to = 'Gene', values_to ='Expression')
+```
+
+
+```{r}
+metadata_monkey <- read_csv('/home/josema/Downloads/metadata_monkey.csv')
+
+count_monkey <- metadata_monkey %>% 
+select(observations, subclass,subtype, area, orig.ident) %>% 
+  count(subclass,subtype, area, orig.ident) %>% 
+  arrange(subclass,subtype, area, orig.ident) 
+
+writexl::write_xlsx(count_monkey, '/home/josema/Downloads/Def_counts/monkey_count_def.xlsx')
+```
+
+
+```{r}
+# eze
+
+Eze <- read.csv('~/Downloads/EZE_cnr1network.csv')
+
+com_class_order= c('Other','PROG', 'IPC', 'NEU', 'OLIG')
+
+
+Eze <- Eze %>% 
+  pivot_longer(cols = c(CNR1,CNR2,NAPEPLD,FAAH,FAAH2,MGLL,DAGLB,DAGLA,CNRIP1), 
+               names_to = 'Gene', 
+               values_to = 'Expression') %>% 
+  mutate(com_class= case_when(Cell.Type %in% c('Neuronal') ~ 'NEU',
+                              Cell.Type%in% c('Radial Glial') ~ 'PROG',
+                              Cell.Type%in% c('IPC') ~ 'IPC',
+                              Cell.Type%in% c('Neuroepithelial') ~ 'PROG',
+                              TRUE ~ 'Other'),
+         Age=as.factor(Age),
+         Area=Area_asannotatedduringdissection,
+         Subclass=NA) %>% 
+  rename(Cell_Id='Cell',
+         Class='Cell.Type') %>% 
+  select(Cell_Id, Age, Cell_Id, Age, Class,,Subclass, com_class,Area, UMAP1, UMAP2,Gene, Expression)
+```
+
+```{r}
+Eze <- read.csv('~/Downloads/EZE_cnr1network.csv')
+  
+count_Eze <- Eze %>% 
+select(Cell, Cell.Type, Area_asannotatedduringdissection, Individual) %>% 
+  count(Cell.Type, Area_asannotatedduringdissection, Individual) %>% 
+  arrange(Cell.Type, Area_asannotatedduringdissection, Individual) 
+
+writexl::write_xlsx(count_Eze, '/home/josema/Downloads/Def_counts/Eze_count_def.xlsx')
+
+```
+
+
+```{r}
+# trevino
+trevino <- read.csv('~/Downloads/Trevino_cannabinoids.csv')
+
+trevino %>%  count(final.label)
+trevino <- trevino %>% 
+  mutate(com_class= case_when(cell.type %in% c('GluN5','GluN4','GluN3','GluN2','GluN7','GluN1','GluN6','GluN8') ~ 'NEU',
+                              cell.type%in% c('Early_RG','tRG','Cyc._Prog.','Late_RG', 'CGE_IN', 'MGE_IN') ~ 'RG',
+                              cell.type%in% c('nIPC') ~ 'IPC',
+                              cell.type%in% c('OPC_Oligo') ~ 'OLIG',
+                              TRUE ~ 'Other'),
+         Subclass=NA)%>% 
+  rename(Cell_Id='X',
+         Class='cell.type',
+         UMAP1='UMAP_0',
+         UMAP2='UMAP_1',
+         Area='Lineage') %>% 
+  select(Cell_Id, Cell_Id, Age, Class,Subclass, com_class,Area, UMAP1, UMAP2,CNR1, CNR2, NAPEPLD, FAAH, FAAH2, MGLL, DAGLB, DAGLA, CNRIP1) %>% 
+  pivot_longer(-c(Cell_Id, Age, Cell_Id, Age, Class,Subclass,Area, com_class, UMAP1, UMAP2), names_to = 'Gene', values_to ='Expression')
+```
+
+```{r}
+Trevino_count <- trevino %>% 
+select(X, final.label, Lineage, Age) %>% 
+  count(final.label, Lineage, Age) %>% 
+  arrange(final.label, Lineage, Age) 
+
+writexl::write_xlsx(Trevino_count, '/home/josema/Downloads/Def_counts/Trevino_count_def.xlsx')
+```
+
+
+```{r}
+# Braun
+braun_expression <- read_csv('/home/josema/Desktop/human_CNR1.csv') 
+braun_Metadata <- read_csv('/home/josema/Downloads/obs.csv')
+
+braun_ID <- read_csv('/home/josema/Desktop/Braun/CellID.csv')[,2]
+braun_tsne <- read_csv('/home/josema/Desktop/Braun/Embedding.csv') [,2:3]
+braun_age <- read_csv('/home/josema/Desktop/Braun/Age.csv')[,2]
+braun_merged_CNR1<-  cbind(braun_Metadata,braun_expression) 
+
+braun_merged_CNR1 <- cbind(braun_ID, braun_tsne, braun_age) %>% setNames(c('CellID', 'tsne1', 'tsne2', 'Age')) %>% 
+  inner_join(braun_merged_CNR1, by='CellID')
+
+braun_merged_CNR1 <- braun_merged_CNR1 %>% 
+  mutate(com_class= case_when(CellClass %in% c("b'Neuron'") ~ 'NEU',
+                              CellClass%in% c("b'Radial glia'") ~ 'RG',
+                              CellClass%in% c("b'Neuronal IPC'"	,"b'Neuroblast'"	) ~ 'IPC',
+                              TRUE ~ 'Other'),
+         Subclass=NA) %>% 
+  rename(Cell_Id='CellID',
+         Class='CellClass',
+         UMAP1='tsne1',
+         UMAP2='tsne2',
+         Age='Age',
+         CNR1='ENSG00000118432',
+         Area='Subregion') %>% 
+  select(Cell_Id, Age, Cell_Id, Age, Class,Subclass, com_class,Area, UMAP1, UMAP2,CNR1) %>% 
+  pivot_longer(-c(Cell_Id, Age, Cell_Id, Age, Class,Subclass, com_class,Area, UMAP1, UMAP2), names_to = 'Gene', values_to ='Expression')
+
+
+```
+
+# Merged file
+
+```{r}
+merged <-  rbind(Manno %>% mutate(Dataset='Manno') %>%  mutate(Age=as.character(Age)),
+              dibella_merged%>% mutate(Dataset='Dibella')%>%  mutate(Age=as.character(Age)),
+              monkey%>% mutate(Dataset='Micali')%>%  mutate(Age=as.character(Age)),
+              Eze%>% mutate(Dataset='Eze')%>%  mutate(Age=as.character(Age)),
+              trevino%>% mutate(Dataset='Trevino')%>%  mutate(Age=as.character(Age)),
+              braun_merged_CNR1%>% mutate(Dataset='Braun')%>%  mutate(Age=as.character(Age))) %>% 
+  mutate(Gene=toupper(Gene))
+
+write_csv(merged, '~/Downloads/Merged_CNR1_definitive.csv')
+```
+
+# reanotación definitiva
+
+```{r}
+merged %>% distinct(Dataset, Area)
+```
+
+```{r}
+merged %>% distinct(Dataset,Class, Area)
+```
+
+```{r}
+order=c(
+'Dorsal_NSC',
+'Ventral_NSC',
+'Excit_IPC',
+'Inhib_IPC',
+'Glut_NEU',
+'Gaba_NEU',
+'CR',
+'GLIOB',
+'ASTRO',
+'OLIG',
+'Other')
+```
+
+# Read merged file
+
+```{r}
+merged <- read_csv('~/Downloads/Merged_CNR1_definitive.csv')
+```
+
+
+```{r}
+
+merged %>% distinct(Dataset,Class, com_class) %>%  filter(Dataset=='Braun') 
+
+merged <- merged %>% 
+  mutate(com_class=case_when(Dataset=='Manno' & Class %in% c('Radial glia') &
+                                                        Subclass %in% c('Cortical hem','Dorsal forebrain', 'Forebrain') ~ 'Dorsal_NSC',
+                                     Dataset=='Manno' & Class %in% c('Radial glia') & Subclass %in% c('Midbrain floor plate', 'Anteromedial cerebral pole')  ~ 'Ventral_NSC',
+                             Dataset=='Manno' & Class %in% c('Radial glia') & Area %in% c('ForebrainVentral','ForebrainVentroLateral')  ~ 'Ventral_NSC',
+                                     Dataset=='Manno' & Class %in% c('Neuroblast') & Subclass %in% c('Forebrain GABAergic') ~ 'Inhib_IPC',
+                                     Dataset=='Manno' & Class %in% c('Neuroblast') & Subclass %in% c('Forebrain glutamatergic') ~ 'Excit_IPC',
+                                     Dataset=='Manno' & Class %in% c('Neuron') & Subclass %in% c('Forebrain glutamatergic') ~ 'Glut_NEU',
+                                     Dataset=='Manno' & Class %in% c('Neuron') & Subclass %in% c('Forebrain GABAergic') ~ 'Gaba_NEU',
+                                     Dataset=='Manno' & Class %in% c('Neuron') & Subclass %in% c('Cajal-Retzius') ~ 'CR',
+                                     Dataset=='Manno' & Class %in% c('Glioblast') & Area %in% c('ForebrainDorsal',
+                                                                                                'ForebrainVentral',
+                                                                                                'Forebrain',
+                                                                                                'ForebrainVentroLateral') ~ 'GLIOB',
+                                     #Dataset=='Manno' & Class %in% c() & Area %in% c() ~ 'ASTRO',
+                                     Dataset=='Manno' & Class %in% c('Oligodendrocyte') & Area %in% c('ForebrainDorsal',
+                                                                                                'ForebrainVentral','Forebrain') ~ 'OLIG',
+                                     
+                                     ######################################################################
+
+                                     Dataset=='Dibella' & Class %in% c('Apical progenitors', 'Cycling glial cells')  ~ 'Dorsal_NSC',
+                                     #Dataset=='Dibella' & Class %in%   ~ 'Ventral_NSC',
+                                     Dataset=='Dibella' & Class %in% c('Intermediate progenitors'	) ~ 'Excit_IPC',
+                                    # Dataset=='Dibella' & Class %in% c()  ~ 'Inhib_IPC',
+                                     Dataset=='Dibella' & Class %in% c('CThPN','DL CPN','DL_CPN_1','DL_CPN_2',
+                                                                       'Immature neurons',
+                                                                       'Layer 4','Layer 6b','Migrating neurons',
+                                                                       'SCPN','UL CPN')  ~ 'Glut_NEU',
+                                     Dataset=='Dibella' & Class %in% c('Interneurons')  ~ 'Gaba_NEU',
+                                     Dataset=='Dibella' & Class %in% c('Cajal Retzius cells')  ~ 'CR',
+                                     #Dataset=='Dibella' & Class %in% c('Cycling glial cells')  ~ 'GLIOB',
+                                     Dataset=='Dibella' & Class %in% c('Astrocytes')  ~ 'ASTRO',
+                                     Dataset=='Dibella' & Class %in% c('Oligodendrocytes')  ~ 'OLIG',
+                                    
+                                    #######################################################################
+
+                                     Dataset=='Micali' & Class %in% c('dorsal NSC') ~ 'Dorsal_NSC',
+                                     Dataset=='Micali' & Class %in% c('Patterning centers') & Subclass %in% c('PC RSPO3','PC SFRP2', 
+                                                                                                              'PC TCF7L2',
+                                                                                                              'PC TTR') ~ 'Dorsal_NSC',
+                                     Dataset=='Micali' & Class %in% c('GE NSC')  ~ 'Ventral_NSC',
+                                     Dataset=='Micali' & Class %in% c('Patterning centers') & Subclass %in% c('PC FGF17') ~ 'Ventral_NSC',
+                                     Dataset=='Micali' & Class %in% c('enIPC')  ~ 'Excit_IPC',
+                                     Dataset=='Micali' & Class %in% c('inIPC')  ~ 'Inhib_IPC',
+                                     Dataset=='Micali' & Class %in% c('Excitatory neurons')  ~ 'Glut_NEU',
+                                     Dataset=='Micali' & Class %in% c('Inhibitory neurons')  ~ 'Gaba_NEU',
+                                     Dataset=='Micali' & Class %in% c('CR') ~ 'CR',
+                                     Dataset=='Micali' & Class %in% c('gIPC') ~ 'GLIOB',
+                                     Dataset=='Micali' & Class %in% c('Astro')  ~ 'ASTRO',
+                                     Dataset=='Micali' & Class %in% c('OPC-Oligo')  ~ 'OLIG',
+                                    
+                                    ########################################################################
+                                    
+                                     Dataset=='Eze' & Class %in% c('Radial Glial',
+                                                                   'Neuroepithelial') & Area %in% c('Telencephalon','Cortex',
+                                                                                   'telencephalon', 'cortex', 'PFC') ~ 'Dorsal_NSC',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c() ~ 'Ventral_NSC',
+                                     Dataset=='Eze' & Class %in% c('IPC') & Area %in% c('Telencephalon','Cortex',
+                                                                                   'telencephalon', 'cortex', 'PFC') ~ 'Excit_IPC',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c('Telencephalon','Cortex',
+                                     #                                              'telencephalon', 'cortex', 'PFC') ~ 'Inhib_IPC',
+                                     Dataset=='Eze' & Class == 'Neuronal' & Area %in% c('Telencephalon','Cortex',
+                                                                                   'telencephalon', 'cortex', 'PFC') ~ 'Glut_NEU',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c() ~ 'Gaba_NEU',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c() ~ 'CR',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c() ~ 'GLIOB',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c() ~ 'ASTRO',
+                                     #Dataset=='Eze' & Class %in% c() & Area %in% c() ~ 'OLIG',
+                                    
+                                    ################################################
+
+                                     Dataset=='Trevino' & Class %in% c('oRG L', 'tRG',
+                                                                       'oRG E', 'tRG EOMES+',  
+                                                                       'Late_RG', 'LQ RGC', 'Early_RG', 
+                                                                       'vRG E', 'vRG L', 'Cyc._Prog.') ~ 'Dorsal_NSC',
+                                     #Dataset=='Trevino' & Class %in% c() & Area %in% c() ~ 'Ventral_NSC',
+                                     Dataset=='Trevino' & Class %in% c('nIPC')  ~ 'Excit_IPC',
+                                     #Dataset=='Trevino' & Class %in% c() ~ 'Inhib_IPC',
+                                     Dataset=='Trevino' & Class %in% c('GluN5','GluN4','GluN3', 'GluN2', 'GluN6', 'GluN8', 
+                                                                       'GluN7', 'GluN1','Neu', 'Neu E') ~ 'Glut_NEU',
+                                     Dataset=='Trevino' & Class %in% c('CGE_IN', 'MGE_IN', 'IN') ~ 'Gaba_NEU',
+                                     #Dataset=='Trevino' & Class %in% c() & Area %in% c() ~ 'CR',
+                                     Dataset=='Trevino' & Class %in% c('mGPC') ~ 'GLIOB',
+                                     Dataset=='Trevino' & Class %in% c('Astro')  ~ 'ASTRO',
+                                     Dataset=='Trevino'  & Class %in% c('OPC', 'OPC_Oligo', 'Oligo') ~ 'OLIG',
+                                    
+                                    #####################################################################
+                                    
+                                     Dataset=='Braun' & Class %in% c("Radial glia") & Area %in% c("b'Telencephalon'", "b'Cortex'",
+                                                                                               "b'Forebrain'") ~ 'Dorsal_NSC',
+                                     Dataset=='Braun' & Class %in% c("Radial glia") & Area %in% c("b'Striatum'") ~ 'Ventral_NSC',
+                                     Dataset=='Braun' & Class %in% c('ExNeuronal IPC') & Area %in% c("b'Telencephalon'", "b'Cortex'",
+                                                                                               "b'Forebrain'") ~ 'Excit_IPC',
+                                     Dataset=='Braun' & Class %in% c('InNeuronal IPC') & Area %in% c("b'Striatum'") ~ 'Inhib_IPC',
+                                     Dataset=='Braun' & Class %in% c("ExNeuroblast" , "ExNeuron" ) & Area %in% c("b'Telencephalon'", "b'Cortex'",
+                                                                                               "b'Forebrain'") ~ 'Glut_NEU',
+                                     Dataset=='Braun' & Class %in% c('InNeuroblast', 'InNeuron') ~ 'Gaba_NEU',
+                                     #Dataset=='Braun' & Class %in% c() & Area %in% c() ~ 'CR',
+                                     Dataset=='Braun' & Class %in% c("Glioblast") ~ 'GLIOB',
+                                     #Dataset=='Braun' & Class %in% c() & Area %in% c() ~ 'ASTRO',
+                                     Dataset=='Braun' & Class %in% c("Oligo:OPC", "Oligo:COPs (premyelinating)")  ~ 'OLIG',
+                                     TRUE ~ 'Other'))
+                                     
+
+
+
+
+
+```
+
+# reannotation 
+
+```{r}
+library(readxl)
+library(dplyr)
+library(purrr)
+
+# Path to your Excel file
+file_path <- "~/Downloads/count_of_celltypes_20250526_NM(2).xlsx"
+
+# Get sheet names
+sheet_names <- excel_sheets(file_path)
+
+# Read all sheets and bind them into one dataframe
+all_sheets_df <- sheet_names %>%
+  set_names() %>%  # Keep sheet names as names
+  map_df(~ read_excel(file_path, sheet = .x), .id = "sheet_name") %>% 
+  select(-sheet_name, -...7,-n)
+
+
+merged <- merged %>% 
+  inner_join(all_sheets_df, by=c('Dataset', 'Class', 'Subclass', 'Area')) %>% 
+  mutate(com_class=com_class.y) 
+
+merged <- merged %>%  dplyr::select(-com_class.x, -com_class.y)
+```
+
+
+# UMAP
+
+```{r fig.height=7, fig.width=12}
+
+order=c('Other',
+'Dorsal_NSC',
+'Excit_IPC',
+'Glut_NEU',
+
+'Ventral_NSC',
+'Inhib_IPC',
+'Gaba_NEU',
+
+'CR',
+'GLIOB',
+'ASTRO',
+'OLIG'
+)
+
+group_colors = c(
+  'Dorsal_NSC' = '#6B6ACF',
+  'Ventral_NSC' = '#C3C2FF',
+  'Excit_IPC' = '#573D80',
+  'Inhib_IPC' = '#A37FCF',
+  'Glut_NEU' = '#C66A68',
+  'Gaba_NEU' = '#F6A8A6',
+  
+  'CR' = '#F7D9A5',
+  'GLIOB' = '#4F8FBF',
+  'ASTRO' = '#A1D4F5',
+  'OLIG' = '#BEE37F',
+  'Other' = '#E0E0E0'
+)
+
+Datasets_order=c('Manno','Dibella', 'Micali', 'Eze', 'Braun', 'Trevino' )
+
+
+merged <- 
+  merged %>% 
+  mutate(Dataset=factor(Dataset, levels=Datasets_order),
+         com_class=factor(com_class, order)) %>% 
+  filter(!Gene%in%c('UMAP_1', 'UMAP_2')) %>% 
+  arrange(com_class)
+```
+
+
+```{r fig.height=7, fig.width=12}
+pdf('~/Downloads/CNR1_related_UMAP.pdf', width = 12, height = 7)
+
+plot1 <- merged %>% 
+  distinct(Cell_Id, Dataset, UMAP1, UMAP2, com_class) %>% 
+  filter(com_class!='Other') %>% 
+  ggplot(aes(x=UMAP1, y =UMAP2, color=com_class))+
+  geom_point(size=0.01, stroke = 0)+
+  theme_void()+
+  facet_grid(Dataset~0, scales = 'free')+
+  theme(aspect.ratio = 1)+
+  scale_color_manual(values=group_colors)+
+  guides(color = guide_legend(override.aes = list(shape = 15, size = 5)))
+
+print(plot1)
+
+plot2 <- merged %>% 
+  group_by(Dataset, Gene) %>%
+  filter(com_class!='Other') %>% 
+  mutate(`0 to max`= Expression/max(Expression), 
+                                          ) %>%
+  ungroup() %>% 
+  arrange(`0 to max`) %>% 
+  ggplot(aes(x=UMAP1, y =UMAP2, color=`0 to max`))+
+  geom_point(size=0.01, stroke = 0)+
+  facet_grid(Dataset~Gene, scales = 'free')+
+  theme_void()+
+  theme(aspect.ratio = 1)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')
+print(plot2)
+
+dev.off()
+
+ggsave(
+  filename = '~/Downloads/CNR1_related_UMAP_celltype.png',
+  plot = plot1,
+  width = 12, height = 7, dpi = 400
+)
+
+ggsave(
+  filename = '~/Downloads/CNR1_related_UMAP_expression.png',
+  plot = plot2,
+  width = 12, height = 7, dpi = 400
+)
+
+```
+
+
+```{r fig.height=7, fig.width=12}
+pdf('~/Downloads/plot_para_nicola_umaps.pdf', width = 24, height = 14)
+
+plot <- merged %>% 
+  filter(com_class!='Other') %>% 
+  distinct(Cell_Id, Dataset, UMAP1, UMAP2, com_class) %>% 
+  ggplot(aes(x = UMAP1, y = UMAP2, color = com_class)) +
+  geom_point(size = 0.01) +
+  theme_void() +
+  facet_wrap(~Dataset, scales = 'free', nrow = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "horizontal"
+  ) +
+  scale_color_manual(values = group_colors) +
+  guides(color = guide_legend(
+    override.aes = list(shape = 15, size = 4),
+    nrow = 1
+  ))
+
+
+print(plot)
+
+plot <- merged %>% 
+  filter(com_class!='Other') %>% 
+  filter(Gene=='CNR1') %>% 
+  group_by(Dataset, Gene) %>%
+  mutate(`0 to max`= Expression/max(Expression), 
+                                          ) %>%
+  ungroup() %>% 
+  arrange(`0 to max`) %>% 
+  ggplot(aes(x=UMAP1, y =UMAP2, color=`0 to max`))+
+  geom_point(size=0.01)+
+  facet_wrap(~Dataset, scales = 'free', nrow = 1)+
+  theme_void()+
+  theme(aspect.ratio = 1,
+        legend.position = "bottom")+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')
+
+print(plot)
+dev.off()
+
+# Primer plot: Cell types por dataset con fondo blanco
+plot1 <- merged %>% 
+  filter(com_class!='Other') %>% 
+  distinct(Cell_Id, Dataset, UMAP1, UMAP2, com_class) %>% 
+  ggplot(aes(x = UMAP1, y = UMAP2, color = com_class)) +
+  geom_point(size = 0.1) +
+  theme_void() +
+  facet_wrap(~Dataset, scales = 'free', nrow = 1) +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  ) +
+  scale_color_manual(values = group_colors) +
+  guides(color = guide_legend(
+    override.aes = list(shape = 15, size = 4),
+    nrow = 1
+  ))
+
+ggsave(
+  filename = '~/Downloads/plot_para_nicola_umaps_celltypes.png',
+  plot = plot1,
+  width = 24, height = 14, dpi = 400, bg = "white"
+)
+
+# Segundo plot: Expresión de CNR1 con fondo blanco
+plot2 <- merged %>% 
+  filter(com_class!='Other') %>% 
+  filter(Gene == 'CNR1') %>% 
+  group_by(Dataset, Gene) %>%
+  mutate(`0 to max` = Expression / max(Expression)) %>%
+  ungroup() %>%
+  arrange(`0 to max`) %>% 
+  ggplot(aes(x = UMAP1, y = UMAP2, color = `0 to max`)) +
+  geom_point(size = 0.1) +
+  facet_wrap(~Dataset, scales = 'free', nrow = 1) +
+  theme_void() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "bottom",
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  ) +
+  scale_color_gradient(low = "#caf0f8", high = "#03045e")
+
+ggsave(
+  filename = '~/Downloads/plot_para_nicola_umaps_CNR1_expr.png',
+  plot = plot2,
+  width = 24, height = 14, dpi = 400, bg = "white"
+)
+```
+
+
+```{r fig.height=7, fig.width=12}
+plot3 <- ggplot(
+  merged %>% 
+    filter(com_class != 'Other', Gene == 'CNR1') %>% 
+    group_by(Dataset, Gene) %>%
+    mutate(expr_norm = Expression / max(Expression)) %>%
+    ungroup()
+) +
+  stat_summary_2d(
+    aes(x = UMAP1, y = UMAP2, z = expr_norm, fill = ..value..),
+    fun = mean,
+    bins = 50
+  ) +
+  facet_wrap(~Dataset, scales = 'free', nrow = 1) +
+  theme_void() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "bottom",
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  ) +
+  scale_fill_gradient(low = "#caf0f8", high = "#03045e")
+
+ggsave(
+  filename = '~/Downloads/plot_para_nicola_umaps_CNR1_expr_avg.png',
+  plot = plot3,
+  width = 24, height = 14, dpi = 400, bg = "white"
+)
+
+
+
+plot4 <- ggplot(
+  merged %>% 
+    filter(com_class != 'Other', Gene == 'CNR1') %>% 
+    group_by(Dataset, Gene) %>%
+    mutate(expr_norm = Expression / max(Expression)) %>%
+    ungroup()
+) +
+  stat_summary_hex(
+    aes(x = UMAP1, y = UMAP2, z = expr_norm, fill = ..value..),
+    fun = mean,
+    bins = 30  # puedes ajustar según lo denso que quieras el hex plot
+  ) +
+  facet_wrap(~Dataset, scales = 'free', nrow = 1) +
+  theme_void() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "bottom",
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA)
+  ) +
+  scale_fill_gradient(low = "#caf0f8", high = "#03045e")
+
+
+ggsave(
+  filename = '~/Downloads/plot_para_nicola_umaps_CNR1_expr_avg_hex.png',
+  plot = plot4,
+  width = 24, height = 14, dpi = 400, bg = "white"
+)
+```
+
+```{r fig.height=5, fig.width=25}
+age_order <- c("Ma-e7.0",   "Ma-e8.0" , "Ma-e8.5"  , "Ma-e9.0"  ,"Ma-e10.0","Ma-e11.0","Ma-e12.0","Ma-e12.5","Ma-e13.0","Ma-e13.5","Ma-e14.0",
+               "Ma-e14.5","Ma-e15.0","Ma-e15.5","Ma-e16.0" ,"Ma-e16.25","Ma-e16.5"  ,"Ma-e17.0"
+               , "Ma-e17.5" , "Ma-e18.0", 
+               
+               "Di-E10","Di-E11","Di-E12","Di-E13","Di-E14","Di-E15","Di-E16","Di-E17","Di-E18_S1","Di-E18_S3","Di-P1","Di-P1_S1" ,"Di-P4",
+               
+               "Ez-12","Ez-13","Ez-14","Ez-15","Ez-19","Ez-20","Ez-22",
+               
+                 
+               "Mi-E37","Mi-E42","Mi-E43","Mi-E54","Mi-E62","Mi-E64","Mi-E77","Mi-E78","Mi-E93","Mi-RMB683","Mi-RMB691",
+               
+               "Tr-pcw16","Tr-pcw20","Tr-pcw21","Tr-pcw24",
+               
+               "Br-5","Br-5.5","Br-6","Br-6.6","Br-6.7","Br-6.9","Br-7", 
+               "Br-7.5","Br-8","Br-8.1","Br-8.5","Br-9.2","Br-9.5" ,"Br-10",
+               "Br-11.5","Br-12","Br-13","Br-14")
+# main dotplot
+data_plot <- merged %>% 
+  filter(com_class!='Other') %>% 
+  group_by(Gene, com_class,Age, Dataset) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene, Dataset) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  ungroup() %>% 
+    mutate(renamed_age = paste0(str_sub(Dataset, 1, 2), "-", Age)) %>% 
+  mutate(renamed_age=factor(renamed_age, levels= age_order)) %>% 
+  arrange(Dataset,com_class,renamed_age) %>% 
+  group_by(Dataset, com_class, Gene) %>% 
+  mutate(age_general=seq(1,n())) %>% ungroup()
+
+# alternativa 
+library(tidyverse)
+
+# 1. Obtener combinaciones reales por Dataset
+dataset_combos <- merged %>%
+  filter(com_class != "Other") %>%
+  distinct(Dataset, Age)
+
+# 2. Expandir a Gene también (porque queremos stats por Gene también)
+all_combinations <- expand_grid(
+  Gene = unique(merged$Gene),
+  dataset_combos
+)
+
+# 3. Calcular stats reales
+data_stats <- merged %>%
+  filter(com_class != "Other") %>%
+  group_by(Gene, com_class, Age, Dataset) %>%
+  summarise(
+    N = n(),
+    Avg = mean(Expression, na.rm = TRUE),
+    Percent = sum(Expression > 0) / n(),
+    .groups = "drop"
+  )
+
+# 4. Merge combinaciones con los datos reales (rellena con NA donde falta)
+data_plot <- all_combinations %>%
+  left_join(data_stats, by = c("Gene", "Age", "Dataset")) %>%
+  group_by(Gene, Dataset) %>%
+  mutate(`0_max` = (Avg - 0) / (max(Avg, na.rm = TRUE) - 0)) %>%
+  ungroup() %>%
+  mutate(
+    renamed_age = paste0(str_sub(Dataset, 1, 2), "-", Age),
+    renamed_age = factor(renamed_age, levels = age_order)
+  ) %>%
+  arrange(Dataset, com_class, renamed_age) %>%
+  group_by(Dataset, com_class, Gene) %>%
+  mutate(age_general = seq(1, n())) %>%
+  ungroup()
+```
+
+
+```{r fig.height=5, fig.width=25}
+library(tidyverse)
+
+# 1. Sacamos todos los Genes únicos
+genes <- unique(merged$Gene)
+
+# 2. Para cada dataset, sacamos el cruce de cell types x edades presentes en ESE dataset
+dataset_combos <- merged %>%
+  filter(com_class != "Other") %>%
+  group_by(Dataset) %>%
+  summarise(
+    Ages = list(unique(Age)),
+    Celltypes = list(unique(com_class)),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    combos = list(expand_grid(Dataset = Dataset, com_class = Celltypes, Age = Ages))
+  ) %>%
+  pull(combos) %>%
+  bind_rows()
+
+# 3. Expandimos también con Gene
+all_combinations <- expand_grid(
+  Gene = genes
+) %>%
+  crossing(dataset_combos)
+
+# 4. Calcular stats reales
+data_stats <- merged %>%
+  filter(com_class != "Other") %>%
+  group_by(Gene, com_class, Age, Dataset) %>%
+  summarise(
+    N = n(),
+    Avg = mean(Expression, na.rm = TRUE),
+    Percent = sum(Expression > 0) / n(),
+    .groups = "drop"
+  )
+
+# 5. Combinar con todas las combinaciones (completa los NA)
+data_plot <- all_combinations %>%
+  left_join(data_stats, by = c("Gene", "com_class", "Age", "Dataset")) %>%
+  group_by(Gene, Dataset) %>%
+  mutate(`0_max` = (Avg - 0) / (max(Avg, na.rm = TRUE) - 0)) %>%
+  ungroup() %>%
+  mutate(
+    renamed_age = paste0(str_sub(Dataset, 1, 2), "-", Age),
+    renamed_age = factor(renamed_age, levels = age_order)
+  ) %>%
+  arrange(Dataset, com_class, renamed_age) %>%
+  group_by(Dataset, com_class, Gene) %>%
+  mutate(age_general = seq(1, n())) %>%
+  ungroup()
+
+```
+
+
+```{r fig.height=5, fig.width=25}
+# 
+# data_plot %>%
+#   group_by(Dataset, com_class) %>%
+#   summarise(range = paste0(
+#     levels(renamed_age)[min(as.integer(renamed_age))], "-",
+#     levels(renamed_age)[max(as.integer(renamed_age))]
+#   ), .groups = "drop")
+# 
+# 
+# data_plot %>%
+#   group_by(Dataset, com_class) %>%
+#   summarise(
+#     min_age_level = min(as.integer(renamed_age)),
+#     max_age_level = max(as.integer(renamed_age)),
+#     min_age_value = Age[as.integer(renamed_age) == min_age_level][1],
+#     max_age_value = Age[as.integer(renamed_age) == max_age_level][1],
+#     range = paste0(min_age_value, "-", max_age_value),
+#     .groups = "drop"
+#   )
+```
+
+
+```{r fig.height=5, fig.width=25}
+plot_gene_expression <- function(data_gene, gene_name) {
+  # TILE plot
+  tile <- data_gene %>%
+        filter(Gene == gene_name) %>%
+    ggplot(aes(x = age_general, y = Dataset, fill = `0_max`)) +
+    geom_tile() +
+    facet_grid(Dataset ~ com_class, scales = 'free', space = 'free') +
+    scale_fill_gradient(low = "#caf0f8", high = '#03045e') +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      legend.position = 'bottom',
+      strip.placement = "outside",
+      strip.background.x = element_rect(color = NA, fill = NA), 
+      strip.background.y = element_blank(),
+      strip.text.y.left = element_blank(),
+      strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+      axis.title.y = element_blank(),
+      panel.border = element_rect(color = NA, fill = NA),
+      panel.grid.major.x = element_blank()
+    )
+
+  # COLUMN plot
+  column <- data_gene %>%
+        filter(Gene == gene_name) %>%
+    ggplot(aes(x = age_general, y = Percent)) +
+    geom_col() +
+    facet_grid(Dataset ~ com_class, scales = 'free_x', space = 'free') +
+    scale_y_continuous(breaks = c(0, 1)) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      legend.position = 'bottom',
+      strip.placement = "outside",
+      strip.background.x = element_rect(color = NA, fill = NA), 
+      strip.background.y = element_blank(),
+      strip.text.y.left = element_blank(),
+      strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+      axis.title.y = element_blank(),
+      panel.border = element_rect(color = NA, fill = NA),
+      panel.grid.major.x = element_blank()
+    )
+
+  # Combine plots
+  egg::ggarrange(tile, column)
+}
+```
+
+```{r}
+plot_gene_expression <- function(data_gene, gene_name) {
+  data_gene_filtered <- data_gene %>% filter(Gene == gene_name)
+
+  # TILE plot
+  tile <- ggplot() +
+    # Tiles para valores válidos
+    geom_tile(
+      data = data_gene_filtered %>% filter(!is.na(`0_max`)),
+      aes(x = age_general, y = Dataset, fill = `0_max`)
+    ) +
+    # X para los NAs
+    geom_text(
+      data = data_gene_filtered %>% filter(is.na(`0_max`)),
+      aes(x = age_general, y = Dataset),
+      label = "X",
+      size = 3,
+      color = "lightgray",
+      fontface = "bold"
+    ) +
+    facet_grid(Dataset ~ com_class, scales = 'free', space = 'free') +
+    scale_fill_gradient(low = "#caf0f8", high = '#03045e', na.value = "white") +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      legend.position = 'bottom',
+      strip.placement = "outside",
+      strip.background.x = element_rect(color = NA, fill = NA),
+      strip.background.y = element_blank(),
+      strip.text.y.left = element_blank(),
+      strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+      axis.title.y = element_blank(),
+      panel.border = element_rect(color = NA, fill = NA),
+      panel.grid.major.x = element_blank()
+    )
+
+  # COLUMN plot
+  column <- data_gene_filtered %>%
+    ggplot(aes(x = age_general, y = Percent)) +
+    geom_col() +
+    facet_grid(Dataset ~ com_class, scales = 'free_x', space = 'free') +
+    scale_y_continuous(breaks = c(0, 1)) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      legend.position = 'bottom',
+      strip.placement = "outside",
+      strip.background.x = element_rect(color = NA, fill = NA),
+      strip.background.y = element_blank(),
+      strip.text.y.left = element_blank(),
+      strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+      axis.title.y = element_blank(),
+      panel.border = element_rect(color = NA, fill = NA),
+      panel.grid.major.x = element_blank()
+    )
+
+  # Combine plots
+  egg::ggarrange(tile, column)
+}
+
+```
+
+```{r fig.height=5, fig.width=25}
+pdf('~/Downloads/main_dotplot.pdf', width = 25, height = 5)
+unique_genes <- unique(data_plot$Gene)
+
+for (gene in unique_genes) {
+  print(gene)
+  print(plot_gene_expression(data_plot, gene))
+}
+
+dev.off()
+
+
+
+pdf('~/Downloads/main_dotplot_v2.pdf', width = 25, height = 5)
+unique_genes <- unique(data_plot$Gene)
+
+for (gene in unique_genes) {
+  print(gene)
+  print(plot_gene_expression(data_plot, gene))
+}
+
+dev.off()
+```
+
+```{r fig.height=8, fig.width=25}
+pdf('~/Downloads/plot_para_nicola_v2.pdf', width = 25, height = 8)
+tile <- data_plot %>% 
+  ggplot(aes(x=renamed_age, y=Dataset, fill=`0_max`))+
+  geom_tile()+
+  facet_grid(Dataset~com_class, scales = 'free', space = 'free')+
+    scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+   theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )
+
+column <- data_plot %>% 
+  ggplot(aes(x=renamed_age, y=Percent))+
+  geom_col()+
+  facet_grid(Dataset~com_class, scales = 'free_x')+
+  theme_classic()+
+   theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )
+print(tile)
+print(column)
+
+plot <- ggpubr::ggarrange(column, tile, ncol = 1, align = 'hv', heights = c(1,1.25))
+print(plot)
+
+dev.off()
+
+```
+
+```{r fig.height=8, fig.width=25}
+merged %>% count(Dataset, Class,Subclass,Area, com_class) %>%  write.csv('~/Downloads/count_of_celltypes')
+merged %>% filter(Dataset=='Manno' & Class %in% c('Radial glia') & Subclass %in% c('Cortical hem','Dorsal forebrain', 'Forebrain') &
+                                                        Area %in% c('ForebrainDorsal')) 
+```
+
+```{r}
+library(openxlsx)
+# Crear el dataset exportar
+summary_data <- merged %>%
+  filter(Gene=='CNR1') %>% 
+  count(Dataset, Class, Subclass, Area, com_class) 
+# Crear un workbook de Excel
+wb <- createWorkbook()
+
+# Agregar la hoja con todos los datos
+addWorksheet(wb, "Todos_los_datos")
+writeData(wb, sheet = "Todos_los_datos", summary_data)
+
+# Lista de datasets
+Datasets_order <- c('Manno','Dibella', 'Micali', 'Eze',  'Braun', 'Trevino')
+
+# Agregar una hoja por cada dataset
+for (ds in Datasets_order) {
+  filtered_data <- summary_data %>% filter(Dataset == ds)
+  addWorksheet(wb, ds)
+  writeData(wb, sheet = ds, filtered_data)
+}
+
+# Guardar el archivo Excel
+saveWorkbook(wb, "~/Downloads/count_of_celltypes.xlsx", overwrite = TRUE)
+```
+
+# Fix the plot of the
+
+```{r}
+annotation_xoel <-  read.csv('~/Downloads/CellInfo.annotated.csv') %>% select(CellID,ShortName,LongName)
+annotation_xoel %>% distinct(LongName, ShortName)
+annotation_xoel %>%  count(ShortName, Tissue)
+
+
+merged <- 
+  merged%>%
+    mutate(Cell_Id = gsub("^b'(.*)'$", "\\1", Cell_Id)) %>% 
+  left_join(annotation_xoel, by = c("Cell_Id"='CellID')) %>%
+  mutate(
+    Class = if_else(Dataset == "Braun" & !is.na(LongName), LongName, Class)
+  ) %>%
+    select(-LongName) %>% 
+  left_join(trevino_reannotation, by = c("Cell_Id"='X')) %>%
+  mutate(
+    Class = if_else(Dataset == "Trevino" & !is.na(final.type), final.type, Class)
+  ) %>% 
+  select(-final.type)
+```
+
+
+```{r}
+annotation_xoel_count <- annotation_xoel %>% 
+select(LongName, Region, Age) %>% 
+  count(LongName, Region, Age) %>% 
+  arrange(LongName, Region, Age) 
+
+writexl::write_xlsx(annotation_xoel_count, '/home/josema/Downloads/Def_counts/Braun_count_def.xlsx')  
+```
+
+
+
+```{r}
+library(tidyverse)
+trevino_reannotation <- read.csv('~/Downloads/Trevino_cannabinoids.csv') %>% select(X,final.label)
+
+trevino_reannotation %>% count(final.label)
+```
+
+
+
+
+
+```{r}
+library(tidyverse)
+
+plot_percent_cells <- function(include_other = TRUE) {
+  # Filter based on 'Other'
+  data_filtered <- if (include_other) {
+    merged
+  } else {
+    merged %>% filter(com_class != 'Other')
+  }
+
+  # Define valid levels (to avoid 'Other' when not included)
+  valid_classes <- data_filtered %>% distinct(com_class) %>% pull()
+
+  # All combos just for the filtered data
+  all_combos <- expand_grid(
+    Dataset = unique(data_filtered$Dataset),
+    com_class = valid_classes
+  )
+
+  # Counts and percents
+  df_plot <- data_filtered %>%
+    count(Dataset, com_class) %>%
+    group_by(Dataset) %>%
+    mutate(percent = n / sum(n)) %>%
+    ungroup()
+
+  # Fill in missing combos
+  df_complete <- all_combos %>%
+    left_join(df_plot, by = c("Dataset", "com_class"))
+
+  # Plot
+  ggplot(df_complete, aes(x = com_class, y = Dataset, fill = percent)) +
+    geom_tile(color = "white") +
+    geom_text(data = subset(df_complete, is.na(percent)), aes(label = "X"), 
+              color = "gray40", size = 5) +
+    scale_fill_gradient(low = "#caf0f8", high = "#03045e", na.value = "white") +
+    scale_y_discrete(limits = rev) +
+    theme_classic() +
+    labs(
+      title = if (include_other) "Including 'Other'" else "Excluding 'Other'",
+      fill = "Percent"
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)
+    )
+}
+
+# Export both plots to PDF
+pdf("/home/josema/Downloads/percent_cells_per_dataset.pdf", width = 10, height = 6)
+print(plot_percent_cells(include_other = TRUE))
+print(plot_percent_cells(include_other = FALSE))
+dev.off()
+
+
+```
+
+```{r}
+merged %>%  filter(Dataset=='Ma')
+```
+
+
+
+```{r fig.height=4, fig.width=30}
+data_plot_filtered <- data_plot %>% 
+  filter(Dataset != 'Braun')
+
+ggplot() +
+  # Tiles con datos válidos
+  geom_tile(
+    data = data_plot_filtered %>% filter(!is.na(`0_max`)),
+    aes(x = age_general, y = Gene, fill = `0_max`)
+  ) +
+  # "X" donde hay NA
+  geom_text(
+    data = data_plot_filtered %>% filter(is.na(`0_max`)),
+    aes(x = age_general, y = Gene),
+    label = "X",
+    size = 3,
+    color = "red",
+    fontface = "bold"
+  ) +
+  facet_grid(~Dataset + com_class, space = 'free_x', scales = 'free_x') +
+  scale_fill_gradient(low = "#caf0f8", high = '#03045e', na.value = "white") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    legend.position = 'bottom',
+    strip.placement = "outside",
+    strip.background = element_blank(),
+    strip.text = element_text(face = 'bold', color = 'gray30'),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+```
+
+```{r}
+library(tidyverse)
+
+# Filtramos los datos que nos interesan
+data_plot_filtered <- data_plot %>% 
+  filter(Dataset != 'Braun')
+
+# Obtener lista única de datasets
+datasets <- unique(data_plot_filtered$Dataset)
+
+# Crear un plot para cada dataset
+plot_list <- map(datasets, function(ds) {
+  
+  data_subset <- data_plot_filtered %>% filter(Dataset == ds)
+  
+  ggplot() +
+    # Tiles con datos válidos
+    geom_tile(
+      data = data_subset %>% filter(!is.na(`0_max`)),
+      aes(x = age_general, y = Gene, fill = `0_max`)
+    ) +
+    # X en los NA
+    geom_text(
+      data = data_subset %>% filter(is.na(`0_max`)),
+      aes(x = age_general, y = Gene),
+      label = "X",
+      size = 3,
+      color = "red",
+      fontface = "bold"
+    ) +
+    facet_grid(~com_class, scales = 'free_x') +
+    scale_fill_gradient(low = "#caf0f8", high = '#03045e', na.value = "white") +
+    labs(title = paste("Dataset:", ds)) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      legend.position = 'bottom',
+      strip.background = element_blank(),
+      strip.text = element_text(face = 'bold', color = 'gray30'),
+      panel.border = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+})
+
+# Opción: verlos en consola
+# print(plot_list[[1]])  # por ejemplo
+
+# Opción: guardar todos
+walk2(plot_list, datasets, ~ggsave(
+  filename = paste0("~/Downloads/tileplot_", .y, ".png"),
+  plot = .x,
+  width = 12, height = 6, dpi = 300
+))
+
+```
+
+# Final annotation 
+
+
+
+```{r}
+readxl::read_xlsx()
+```
+

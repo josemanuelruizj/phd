@@ -1,0 +1,5 @@
+"0","#read final macro table 
+final_macro_table <- readxl::read_xlsx('/users/genomics/josema/final_matrix_cnr1/summary_table_plot.xlsx')
+"
+"2","Error: `path` does not exist: ‘/users/genomics/josema/final_matrix_cnr1/summary_table_plot.xlsx’
+"

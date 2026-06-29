@@ -1,0 +1,611 @@
+# -----------------------------
+# Species-grouped dotplots for all genes
+# 3-column facet layout
+#
+# x = human-equivalent age in weeks after conception
+# y = dataset, grouped by species order
+# facets = cell types, ncol = 3
+# size = % cells expressing gene
+# fill = mean expression scaled 0-1 per dataset and gene
+#
+# Includes:
+# - Other removed BEFORE normalization
+# - Astro / ASTRO unified
+# - SOX2-negative classes removed from supplementary figures
+# - CR placed before glioblasts
+# - vertical lines every week
+# - same x axis across all genes
+# - legend placed inside empty bottom-right plot space
+# - all genes exported
+# -----------------------------
+
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(purrr)
+library(ggh4x)
+library(tibble)
+library(grid)
+
+# -----------------------------
+# 1. Read files
+# -----------------------------
+setwd("~")
+
+expr <- read_excel("Downloads/summary_table_average_expr_cells.xlsx")
+ages <- read_excel("Downloads/converted_ages_long.xlsx")
+
+# -----------------------------
+# 2. Define genes
+# -----------------------------
+
+genes_all <- c(
+  "CNR1",
+  "CNR2",
+  "CNRIP1",
+  "DAGLA",
+  "DAGLB",
+  "FAAH",
+  "MGLL",
+  "NAPEPLD"
+)
+
+genes_to_plot <- genes_all
+
+# -----------------------------
+# 3. Clean / harmonise expression table
+# -----------------------------
+
+expr_clean <- expr %>%
+  mutate(
+    DATASET = toupper(DATASET),
+    Common_name = as.character(Common_name),
+    
+    Common_name = case_when(
+      str_to_upper(Common_name) == "ASTRO" ~ "Astro",
+      Common_name %in% c("Gaba_NEU", "GABA_NEU") ~ "GABA_NEU",
+      TRUE ~ Common_name
+    ),
+    
+    age_join = AGE_combined %>%
+      as.character() %>%
+      str_remove("^.*_") %>%
+      str_replace_all("\\.", ",")
+  ) %>%
+  filter(
+    !is.na(Common_name),
+    !Common_name %in% c("Other", "OTHER")
+  )
+
+# -----------------------------
+# 4. Clean / harmonise age table
+# -----------------------------
+
+ages_clean <- ages %>%
+  mutate(
+    DATASET = toupper(Dataset),
+    age_join = `Real age` %>%
+      as.character() %>%
+      str_replace_all("\\.", ","),
+    
+    # Original converted age in days.
+    human_age_days = `Converted (heterochrony or days)`,
+    
+    # Convert days to weeks.
+    human_age_weeks = human_age_days / 7
+  ) %>%
+  select(DATASET, age_join, human_age_days, human_age_weeks)
+
+# -----------------------------
+# 5. Pivot expression table to long format
+# -----------------------------
+
+expr_long <- expr_clean %>%
+  select(
+    DATASET,
+    Common_name,
+    AGE_combined,
+    age_join,
+    n_cells,
+    matches("_(avg_expression|percent_expressing)$")
+  ) %>%
+  pivot_longer(
+    cols = matches("_(avg_expression|percent_expressing)$"),
+    names_to = c("gene", "metric"),
+    names_pattern = "^(.*)_(avg_expression|percent_expressing)$",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  ) %>%
+  filter(gene %in% genes_all)
+
+# -----------------------------
+# 6. Cell type order and labels
+#    SOX2-negative classes removed
+#    CR placed before glioblasts
+# -----------------------------
+
+celltype_order_raw <- c(
+  # Dorsal lineage
+  "Dorsal_NSC(SOX2+)",
+  "Excit_IPC",
+  "Glut_NEU",
+  
+  # Ventral lineage
+  "Ventral_NSC(SOX2+)",
+  "Inhib_IPC",
+  "GABA_NEU",
+  
+  # CR / glia
+  "CR",
+  "GLIOB",
+  "OLIG",
+  "Astro"
+)
+
+celltype_labels <- c(
+  "Dorsal_NSC(SOX2+)"  = "Dorsal NSC (SOX2+)",
+  "Excit_IPC"          = "Excitatory IPC",
+  "Glut_NEU"           = "Glutamatergic neurons",
+  
+  "Ventral_NSC(SOX2+)" = "Ventral NSC (SOX2+)",
+  "Inhib_IPC"          = "Inhibitory IPC",
+  "GABA_NEU"           = "GABAergic neurons",
+  
+  "CR"                 = "Cajal-Retzius cells",
+  "GLIOB"              = "Glioblasts",
+  "OLIG"               = "Oligodendrocyte lineage",
+  "Astro"              = "Astrocytes"
+)
+
+celltype_order_clean <- unname(celltype_labels[celltype_order_raw])
+
+# -----------------------------
+# 7. Dataset labels and species groups
+# -----------------------------
+
+min_cells <- 25
+
+dataset_order <- c(
+  "MANNO",
+  "DIBELLA",
+  "MICALI",
+  "EZE",
+  "BRAUN",
+  "TREVINO"
+)
+
+dataset_labels <- c(
+  "MANNO"   = "La Manno et al. (2021)",
+  "DIBELLA" = "Di Bella et al. (2021)",
+  "MICALI"  = "Micali et al. (2023)",
+  "EZE"     = "Eze et al. (2021)",
+  "BRAUN"   = "Braun et al. (2023)",
+  "TREVINO" = "Trevino et al. (2021)"
+)
+
+dataset_y_order <- c(
+  "TREVINO",
+  "BRAUN",
+  "EZE",
+  "MICALI",
+  "DIBELLA",
+  "MANNO"
+)
+
+dataset_y_labels <- c(
+  "TREVINO" = "Human | Trevino et al. (2021)",
+  "BRAUN"  = "Human | Braun et al. (2023)",
+  "EZE"    = "Human | Eze et al. (2021)",
+  "MICALI" = "Macaque | Micali et al. (2023)",
+  "DIBELLA" = "Mouse | Di Bella et al. (2021)",
+  "MANNO"   = "Mouse | La Manno et al. (2021)"
+)
+
+plot_data_all <- expr_long %>%
+  left_join(ages_clean, by = c("DATASET", "age_join")) %>%
+  filter(
+    !is.na(human_age_weeks),
+    Common_name %in% celltype_order_raw
+  ) %>%
+  mutate(
+    enough_cells = n_cells >= min_cells,
+    
+    SPECIES_GROUP = case_when(
+      DATASET %in% c("MANNO", "DIBELLA") ~ "Mouse",
+      DATASET %in% c("MICALI") ~ "Macaque",
+      DATASET %in% c("EZE", "BRAUN", "TREVINO") ~ "Human",
+      TRUE ~ NA_character_
+    ),
+    
+    Common_name_clean = recode(
+      Common_name,
+      !!!celltype_labels
+    ),
+    
+    Common_name_clean = factor(
+      Common_name_clean,
+      levels = celltype_order_clean
+    ),
+    
+    DATASET = factor(
+      DATASET,
+      levels = dataset_y_order
+    )
+  ) %>%
+  filter(
+    !is.na(DATASET),
+    !is.na(SPECIES_GROUP),
+    !is.na(Common_name_clean)
+  )
+
+# -----------------------------
+# 8. Normalize expression per dataset and gene
+# -----------------------------
+
+plot_data_all <- plot_data_all %>%
+  group_by(DATASET, gene) %>%
+  mutate(
+    max_expr_valid = max(avg_expression[enough_cells], na.rm = TRUE),
+    max_expr_valid = ifelse(is.infinite(max_expr_valid), NA_real_, max_expr_valid),
+    avg_expression_norm = ifelse(
+      enough_cells & !is.na(max_expr_valid) & max_expr_valid > 0,
+      avg_expression / max_expr_valid,
+      NA_real_
+    )
+  ) %>%
+  ungroup()
+
+# -----------------------------
+# 9. Shared x-axis across all plots
+# -----------------------------
+
+x_min <- floor(min(plot_data_all$human_age_weeks, na.rm = TRUE))
+x_max <- ceiling(max(plot_data_all$human_age_weeks, na.rm = TRUE))
+
+x_limits_shared <- c(x_min, x_max)
+
+week_lines <- tibble(
+  human_age_weeks = seq(x_min, x_max, by = 1)
+)
+
+week_breaks <- seq(x_min, x_max, by = 2)
+
+# -----------------------------
+# 10. Facet strip colors
+#     Must match the 10 celltype facets in order
+# -----------------------------
+
+strip_fills <- c(
+  # Dorsal lineage
+  "#D9ECF5",
+  "#8EC1DA",
+  "#2B8CBE",
+  
+  # Ventral lineage
+  "#FEE0D2",
+  "#FC9272",
+  "#CB181D",
+  
+  # CR / glia
+  "#E6E6E6",
+  "#E6E6E6",
+  "#E6E6E6",
+  "#E6E6E6"
+)
+
+strip_text_colors <- c(
+  # Dorsal lineage
+  "black",
+  "black",
+  "white",
+  
+  # Ventral lineage
+  "black",
+  "black",
+  "white",
+  
+  # CR / glia
+  "grey20",
+  "grey20",
+  "grey20",
+  "grey20"
+)
+
+strip_backgrounds <- lapply(
+  strip_fills,
+  function(x) {
+    ggplot2::element_rect(
+      fill = x,
+      color = "grey65",
+      linewidth = 0.4
+    )
+  }
+)
+
+strip_texts <- lapply(
+  strip_text_colors,
+  function(x) {
+    ggplot2::element_text(
+      color = x,
+      face = "bold",
+      size = 10.5
+    )
+  }
+)
+
+# -----------------------------
+# 11. Plot function
+# -----------------------------
+
+plot_gene_species_dotplot_3cols <- function(gene_name) {
+  
+  plot_data_gene <- plot_data_all %>%
+    filter(gene == gene_name)
+  
+  plot_data_included <- plot_data_gene %>%
+    filter(enough_cells)
+  
+  plot_data_excluded <- plot_data_gene %>%
+    filter(!enough_cells)
+  
+  ggplot() +
+    
+    geom_vline(
+      data = week_lines,
+      aes(xintercept = human_age_weeks),
+      linetype = "dashed",
+      linewidth = 0.22,
+      color = "grey82",
+      alpha = 0.75
+    ) +
+    
+    geom_point(
+      data = plot_data_included,
+      aes(
+        x = human_age_weeks,
+        y = DATASET,
+        size = percent_expressing,
+        fill = avg_expression_norm
+      ),
+      shape = 21,
+      color = "grey15",
+      stroke = 0.16,
+      alpha = 0.95
+    ) +
+    
+    geom_point(
+      data = plot_data_excluded,
+      aes(
+        x = human_age_weeks,
+        y = DATASET
+      ),
+      shape = 4,
+      size = 1.9,
+      stroke = 0.55,
+      color = "grey45",
+      alpha = 0.8
+    ) +
+    
+    ggh4x::facet_wrap2(
+      ~ Common_name_clean,
+      ncol = 3,
+      strip = ggh4x::strip_themed(
+        background_x = strip_backgrounds,
+        text_x = strip_texts
+      )
+    ) +
+    
+    scale_fill_viridis_c(
+      option = "viridis",
+      direction = 1,
+      limits = c(0, 1),
+      breaks = c(0, 0.25, 0.5, 0.75, 1),
+      name = paste0("Mean ", gene_name, "\nexpression scaled 0-1")
+    ) +
+    
+    scale_size_continuous(
+      range = c(0.8, 5.4),
+      breaks = c(25, 50, 75, 100),
+      limits = c(0, 100),
+      name = paste0(gene_name, "+ cells (%)")
+    ) +
+    
+    scale_x_continuous(
+      limits = x_limits_shared,
+      breaks = week_breaks,
+      minor_breaks = seq(x_min, x_max, by = 1),
+      expand = expansion(mult = c(0.02, 0.04))
+    ) +
+    
+    scale_y_discrete(
+      labels = dataset_y_labels,
+      drop = TRUE
+    ) +
+    
+    coord_cartesian(
+      xlim = x_limits_shared,
+      clip = "off"
+    ) +
+    
+    labs(
+      x = "Human-equivalent developmental age (weeks after conception)",
+      y = NULL,
+      title = paste0(gene_name, " expression dynamics across cortical cell types"),
+      subtitle = paste0(
+        "Crosses indicate groups with fewer than ",
+        min_cells,
+        " cells."
+      )
+    ) +
+    
+    guides(
+      fill = guide_colorbar(
+        order = 1,
+        title.position = "top",
+        title.hjust = 0.5,
+        barwidth = unit(2.6, "cm"),
+        barheight = unit(0.22, "cm"),
+        ticks = TRUE
+      ),
+      
+      size = guide_legend(
+        order = 2,
+        title.position = "top",
+        title.hjust = 0.5,
+        direction = "horizontal",
+        nrow = 1,
+        override.aes = list(
+          fill = "grey70",
+          color = "grey15",
+          alpha = 0.95
+        )
+      )
+    ) +
+    
+    theme_classic(base_size = 9.5) +
+    
+    theme(
+      plot.title = element_text(
+        face = "bold",
+        size = 12,
+        hjust = 0
+      ),
+      
+      plot.subtitle = element_text(
+        size = 8.5,
+        color = "grey25",
+        hjust = 0,
+        margin = margin(t = 3, b = 6)
+      ),
+      
+      strip.background = element_blank(),
+      
+      strip.text = element_text(
+        face = "bold",
+        size = 10.5
+      ),
+      
+      axis.text.x = element_text(
+        size = 7,
+        angle = 45,
+        hjust = 1,
+        vjust = 1
+      ),
+      
+      axis.text.y = element_text(
+        size = 7.2,
+        color = "grey15"
+      ),
+      
+      axis.title.x = element_text(
+        size = 8.5,
+        margin = margin(t = 6)
+      ),
+      
+      axis.line = element_line(
+        linewidth = 0.28,
+        color = "grey20"
+      ),
+      
+      axis.ticks = element_line(
+        linewidth = 0.25,
+        color = "grey20"
+      ),
+      
+      panel.spacing.x = unit(0.65, "lines"),
+      panel.spacing.y = unit(0.85, "lines"),
+      
+      # -----------------------------
+      # Legend inside empty bottom-right area
+      # -----------------------------
+      legend.position = c(0.455, 0.08),
+      legend.justification = c(0, 0),
+      
+      legend.box = "horizontal",
+      legend.box.just = "center",
+      legend.direction = "horizontal",
+      
+      legend.background = element_rect(
+        fill = alpha("white", 0.88),
+        color = NA
+      ),
+      
+      legend.title = element_text(size = 6.6),
+      legend.text = element_text(size = 6.2),
+      
+      legend.spacing.x = unit(0.62, "cm"),
+      legend.spacing.y = unit(0.01, "cm"),
+      
+      legend.key.height = unit(0.24, "cm"),
+      legend.key.width = unit(0.34, "cm"),
+      
+      legend.margin = margin(t = 1, r = 1, b = 1, l = 1),
+      legend.box.margin = margin(t = 0, r = 0, b = 0, l = 0),
+      
+      plot.margin = margin(6, 8, 6, 6)
+    )
+}
+
+# -----------------------------
+# 12. Generate plots for all genes
+# -----------------------------
+
+plots_species_dotplot_3cols_all_genes <- map(
+  genes_to_plot,
+  plot_gene_species_dotplot_3cols
+)
+
+names(plots_species_dotplot_3cols_all_genes) <- genes_to_plot
+
+# Show examples
+plots_species_dotplot_3cols_all_genes[["CNR1"]]
+plots_species_dotplot_3cols_all_genes[["CNR2"]]
+plots_species_dotplot_3cols_all_genes[["NAPEPLD"]]
+
+# -----------------------------
+# 13. Save all plots
+# -----------------------------
+
+dir.create(
+  file.path("Downloads", "gene_species_dotplots_3cols_supplementary"),
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+walk(
+  genes_to_plot,
+  function(gene_name) {
+    
+    ggsave(
+      filename = file.path(
+        "Downloads",
+        "gene_species_dotplots_3cols_supplementary",
+        paste0(gene_name, "_species_dotplot_3cols_supplementary.pdf")
+      ),
+      plot = plots_species_dotplot_3cols_all_genes[[gene_name]],
+      width = 8.27,
+      height = 11.69,
+      units = "in",
+      device = cairo_pdf
+    )
+    
+    ggsave(
+      filename = file.path(
+        "Downloads",
+        "gene_species_dotplots_3cols_supplementary",
+        paste0(gene_name, "_species_dotplot_3cols_supplementary.png")
+      ),
+      plot = plots_species_dotplot_3cols_all_genes[[gene_name]],
+      width = 8.27,
+      height = 11.69,
+      units = "in",
+      dpi = 500
+    )
+  }
+)

@@ -1,0 +1,923 @@
+# ============================================================
+# Biomart orthology analysis
+# Human reference vs:
+# cat, cow, horse, rat, rabbit, zebrafish, macaque,
+# marmoset, mouse
+# ============================================================
+
+library(biomaRt)
+library(tidyverse)
+library(ggalluvial)
+
+# -----------------------------
+# Paths
+# -----------------------------
+
+outdir <- "/home/josema/Downloads/orthology_species_analysis"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+bhlh_path <- "/home/josema/Downloads/Tesis/factors_classification.csv"
+
+# -----------------------------
+# Species table
+# -----------------------------
+
+species_tbl <- tribble(
+  ~species,      ~label,       ~prefix,
+  "cat",         "Cat",        "fcatus",
+  "cow",         "Cow",        "btaurus",
+  "horse",       "Horse",      "ecaballus",
+  "rat",         "Rat",        "rnorvegicus",
+  "rabbit",      "Rabbit",     "ocuniculus",
+  "zebrafish",   "Zebrafish",  "drerio",
+  "macaque",     "Macaque",    "mmulatta",
+  "marmoset",    "Marmoset",   "cjacchus",
+  "mouse",       "Mouse",      "mmusculus"
+)
+
+species_order <- species_tbl$label
+# ============================================================
+# Safer BioMart download: per species + chunks
+# ============================================================
+
+library(biomaRt)
+library(tidyverse)
+library(curl)
+
+outdir <- "/home/josema/Downloads/orthology_species_analysis"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+species_tbl <- tribble(
+  ~species,      ~label,       ~prefix,
+  "cat",         "Cat",        "fcatus",
+  "cow",         "Cow",        "btaurus",
+  "horse",       "Horse",      "ecaballus",
+  "rat",         "Rat",        "rnorvegicus",
+  "rabbit",      "Rabbit",     "ocuniculus",
+  "zebrafish",   "Zebrafish",  "drerio",
+  "macaque",     "Macaque",    "mmulatta",
+  "marmoset",    "Marmoset",   "cjacchus",
+  "mouse",       "Mouse",      "mmusculus"
+)
+
+# -----------------------------
+# Connect to Ensembl using mirrors
+# -----------------------------
+
+connect_ensembl <- function() {
+  mirrors <- c("www", "useast", "uswest", "asia")
+  
+  for (m in mirrors) {
+    message("Trying Ensembl mirror: ", m)
+    
+    mart <- tryCatch(
+      {
+        useEnsembl(
+          biomart = "genes",
+          dataset = "hsapiens_gene_ensembl",
+          mirror = m
+        )
+      },
+      error = function(e) NULL
+    )
+    
+    if (!is.null(mart)) {
+      message("Connected to mirror: ", m)
+      return(mart)
+    }
+  }
+  
+  stop("Could not connect to any Ensembl mirror.")
+}
+
+ensembl <- connect_ensembl()
+
+# Longer timeout handle
+curl_handle <- curl::new_handle(timeout = 1000)
+
+# -----------------------------
+# Get human genes first
+# -----------------------------
+
+human_genes_file <- file.path(outdir, "human_genes.csv")
+
+if (file.exists(human_genes_file)) {
+  
+  human_genes <- read.csv(human_genes_file)
+  
+} else {
+  
+  human_genes <- getBM(
+    attributes = c("ensembl_gene_id", "external_gene_name"),
+    mart = ensembl,
+    curl = curl_handle
+  )
+  
+  human_genes <- human_genes %>%
+    filter(!is.na(ensembl_gene_id), ensembl_gene_id != "") %>%
+    distinct()
+  
+  write.csv(human_genes, human_genes_file, row.names = FALSE)
+}
+
+gene_chunks <- split(
+  human_genes$ensembl_gene_id,
+  ceiling(seq_along(human_genes$ensembl_gene_id) / 1000)
+)
+
+# -----------------------------
+# Function to safely query one species
+# -----------------------------
+
+query_species_orthologs <- function(sp_row, gene_chunks, mart, outdir) {
+  
+  sp <- sp_row
+  
+  message("\n==============================")
+  message("Species: ", sp$label)
+  message("==============================")
+  
+  orth_col <- paste0(sp$prefix, "_homolog_orthology_type")
+  ens_col  <- paste0(sp$prefix, "_homolog_ensembl_gene")
+  name_col <- paste0(sp$prefix, "_homolog_associated_gene_name")
+  
+  available_attrs <- listAttributes(mart)$name
+  
+  attrs <- c(
+    "ensembl_gene_id",
+    "external_gene_name",
+    orth_col,
+    ens_col,
+    name_col
+  )
+  
+  attrs <- attrs[attrs %in% available_attrs]
+  
+  missing_attrs <- setdiff(
+    c("ensembl_gene_id", "external_gene_name", orth_col, ens_col),
+    attrs
+  )
+  
+  if (length(missing_attrs) > 0) {
+    warning(
+      "Skipping ",
+      sp$label,
+      ". Missing attributes: ",
+      paste(missing_attrs, collapse = ", ")
+    )
+    return(NULL)
+  }
+  
+  species_file <- file.path(
+    outdir,
+    paste0("orthologs_", sp$species, ".csv")
+  )
+  
+  if (file.exists(species_file)) {
+    message("Already exists, reading: ", species_file)
+    return(read.csv(species_file))
+  }
+  
+  chunk_results <- vector("list", length(gene_chunks))
+  
+  for (i in seq_along(gene_chunks)) {
+    
+    message("  Chunk ", i, "/", length(gene_chunks))
+    
+    chunk_result <- tryCatch(
+      {
+        getBM(
+          attributes = attrs,
+          filters = "ensembl_gene_id",
+          values = gene_chunks[[i]],
+          mart = mart,
+          curl = curl_handle
+        )
+      },
+      error = function(e) {
+        message("    Failed chunk ", i, ": ", e$message)
+        NULL
+      }
+    )
+    
+    chunk_results[[i]] <- chunk_result
+    
+    Sys.sleep(0.2)
+  }
+  
+  species_df <- bind_rows(chunk_results)
+  
+  species_df[species_df == ""] <- NA
+  
+  write.csv(species_df, species_file, row.names = FALSE)
+  
+  species_df
+}
+
+# -----------------------------
+# Download one species at a time
+# -----------------------------
+
+orthologs_list <- pmap(
+  species_tbl,
+  function(species, label, prefix) {
+    query_species_orthologs(
+      sp_row = tibble(
+        species = species,
+        label = label,
+        prefix = prefix
+      ),
+      gene_chunks = gene_chunks,
+      mart = ensembl,
+      outdir = outdir
+    )
+  }
+)
+
+names(orthologs_list) <- species_tbl$species
+
+# -----------------------------
+# Merge all species tables
+# -----------------------------
+
+orthologs_raw <- reduce(
+  orthologs_list,
+  full_join,
+  by = c("ensembl_gene_id", "external_gene_name")
+)
+
+orthologs_raw[orthologs_raw == ""] <- NA
+
+write.csv(
+  orthologs_raw,
+  file.path(outdir, "human_reference_orthologs_raw.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+# Download orthologs
+# -----------------------------
+
+orthologs_raw <- getBM(
+  attributes = attrs_to_get,
+  mart = ensembl
+)
+
+orthologs_raw[orthologs_raw == ""] <- NA
+
+write.csv(
+  orthologs_raw,
+  file.path(outdir, "human_reference_orthologs_raw.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+# Helper functions
+# -----------------------------
+
+collapse_orthology <- function(x) {
+  x <- as.character(x)
+  x <- x[!is.na(x) & x != "" & x != "NA"]
+  
+  # BioMart can return many2one; for this analysis we merge it
+  # into the one2many / non-one2one category
+  x[x == "ortholog_many2one"] <- "ortholog_one2many"
+  
+  if (length(x) == 0) {
+    return("NA")
+  }
+  
+  if (any(x == "ortholog_many2many")) {
+    return("ortholog_many2many")
+  }
+  
+  if (any(x == "ortholog_one2many")) {
+    return("ortholog_one2many")
+  }
+  
+  if (all(x == "ortholog_one2one")) {
+    return("ortholog_one2one")
+  }
+  
+  return(paste(sort(unique(x)), collapse = ";"))
+}
+
+
+cumulative_orthology <- function(x) {
+  x <- as.character(x)
+  
+  if (any(is.na(x) | x == "" | x == "NA")) {
+    return("NA")
+  }
+  
+  x[x == "ortholog_many2one"] <- "ortholog_one2many"
+  
+  if (all(x == "ortholog_one2one")) {
+    return("ortholog_one2one")
+  }
+  
+  if (any(x == "ortholog_many2many")) {
+    return("ortholog_many2many")
+  }
+  
+  return("ortholog_one2many")
+}
+
+# -----------------------------
+# Convert BioMart output to long format
+# -----------------------------
+
+orthology_long <- map_dfr(seq_len(nrow(species_tbl)), function(i) {
+  
+  sp <- species_tbl[i, ]
+  
+  orth_col <- paste0(sp$prefix, "_homolog_orthology_type")
+  ens_col  <- paste0(sp$prefix, "_homolog_ensembl_gene")
+  name_col <- paste0(sp$prefix, "_homolog_associated_gene_name")
+  
+  df <- orthologs_raw
+  
+  if (!name_col %in% colnames(df)) {
+    df[[name_col]] <- NA_character_
+  }
+  
+  df %>%
+    transmute(
+      human_ensembl_gene_id = ensembl_gene_id,
+      human_gene = external_gene_name,
+      species = sp$species,
+      Species = sp$label,
+      homolog_ensembl_gene = .data[[ens_col]],
+      homolog_gene_name = .data[[name_col]],
+      Orthology_raw = .data[[orth_col]]
+    )
+})
+
+orthology_long <- orthology_long %>%
+  mutate(
+    Orthology_raw = ifelse(is.na(Orthology_raw), "NA", Orthology_raw),
+    Orthology_raw = ifelse(
+      Orthology_raw == "ortholog_many2one",
+      "ortholog_one2many",
+      Orthology_raw
+    )
+  )
+
+write.csv(
+  orthology_long,
+  file.path(outdir, "human_reference_orthologs_long.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+# Collapse duplicated BioMart rows
+# one row per human gene x species
+# -----------------------------
+
+orthology_collapsed <- orthology_long %>%
+  group_by(
+    human_ensembl_gene_id,
+    human_gene,
+    species,
+    Species
+  ) %>%
+  summarise(
+    Orthology = collapse_orthology(Orthology_raw),
+    homolog_ensembl_gene = paste(
+      unique(na.omit(homolog_ensembl_gene)),
+      collapse = ";"
+    ),
+    homolog_gene_name = paste(
+      unique(na.omit(homolog_gene_name)),
+      collapse = ";"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Orthology = factor(
+      Orthology,
+      levels = c(
+        "ortholog_one2one",
+        "ortholog_one2many",
+        "ortholog_many2many",
+        "NA"
+      )
+    ),
+    Species = factor(Species, levels = species_order)
+  )
+
+write.csv(
+  orthology_collapsed,
+  file.path(outdir, "human_reference_orthologs_collapsed.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+# Per-species statistics
+# -----------------------------
+
+per_species_stats <- orthology_collapsed %>%
+  count(Species, Orthology, name = "n") %>%
+  group_by(Species) %>%
+  mutate(
+    total = sum(n),
+    percentage = 100 * n / total
+  ) %>%
+  ungroup()
+
+write.csv(
+  per_species_stats,
+  file.path(outdir, "per_species_orthology_stats.csv"),
+  row.names = FALSE
+)
+
+print(per_species_stats)
+
+# -----------------------------
+# Wide table: one row per human gene
+# -----------------------------
+
+orthology_wide <- orthology_collapsed %>%
+  select(
+    human_ensembl_gene_id,
+    human_gene,
+    Species,
+    Orthology
+  ) %>%
+  mutate(Orthology = as.character(Orthology)) %>%
+  pivot_wider(
+    names_from = Species,
+    values_from = Orthology
+  )
+
+write.csv(
+  orthology_wide,
+  file.path(outdir, "human_reference_orthologs_wide.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+# Cumulative analysis
+# Equivalent to:
+# Chimp
+# Chimp + Gorilla
+# Chimp + Gorilla + Pongo
+#
+# But now with your species order.
+# -----------------------------
+
+cumulative_wide <- orthology_wide %>%
+  select(human_ensembl_gene_id, human_gene)
+
+cumulative_levels <- c()
+
+for (i in seq_along(species_order)) {
+  
+  level_name <- paste0(
+    sprintf("%02d", i),
+    "_",
+    ifelse(i == 1, species_order[i], paste0("+", species_order[i]))
+  )
+  
+  cumulative_levels <- c(cumulative_levels, level_name)
+  
+  cumulative_wide[[level_name]] <- apply(
+    orthology_wide[, species_order[1:i], drop = FALSE],
+    1,
+    cumulative_orthology
+  )
+}
+
+write.csv(
+  cumulative_wide,
+  file.path(outdir, "cumulative_orthology_wide.csv"),
+  row.names = FALSE
+)
+
+cumulative_long <- cumulative_wide %>%
+  pivot_longer(
+    cols = all_of(cumulative_levels),
+    names_to = "Level",
+    values_to = "Orthology"
+  ) %>%
+  mutate(
+    Level = factor(Level, levels = cumulative_levels),
+    Orthology = factor(
+      Orthology,
+      levels = c(
+        "ortholog_one2one",
+        "ortholog_one2many",
+        "ortholog_many2many",
+        "NA"
+      )
+    )
+  )
+
+cumulative_stats <- cumulative_long %>%
+  count(Level, Orthology, name = "n") %>%
+  group_by(Level) %>%
+  mutate(
+    total = sum(n),
+    percentage = 100 * n / total
+  ) %>%
+  ungroup()
+
+write.csv(
+  cumulative_stats,
+  file.path(outdir, "cumulative_orthology_stats.csv"),
+  row.names = FALSE
+)
+
+print(cumulative_stats)
+
+# ============================================================
+# bHLH analysis
+# ============================================================
+
+bhlh <- read.csv(bhlh_path) %>%
+  select(
+    X,
+    Ledent2002.Simionato2007Name
+  ) %>%
+  rename(
+    bHLH = X,
+    Family = Ledent2002.Simionato2007Name
+  ) %>%
+  distinct()
+
+# -----------------------------
+# bHLH per species
+# -----------------------------
+
+bhlh_species <- bhlh %>%
+  left_join(
+    orthology_collapsed %>%
+      select(human_gene, Species, Orthology),
+    by = c("bHLH" = "human_gene")
+  ) %>%
+  mutate(
+    Species = factor(Species, levels = species_order),
+    Orthology = as.character(Orthology),
+    Orthology = ifelse(is.na(Orthology), "NA", Orthology),
+    Orthology = factor(
+      Orthology,
+      levels = c(
+        "ortholog_one2one",
+        "ortholog_one2many",
+        "ortholog_many2many",
+        "NA"
+      )
+    )
+  )
+
+write.csv(
+  bhlh_species,
+  file.path(outdir, "bhlh_orthology_per_species.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------
+# bHLH cumulative
+# -----------------------------
+
+bhlh_cumulative <- bhlh %>%
+  left_join(
+    cumulative_long %>%
+      select(human_gene, Level, Orthology),
+    by = c("bHLH" = "human_gene")
+  ) %>%
+  mutate(
+    Level = factor(Level, levels = cumulative_levels),
+    Orthology = as.character(Orthology),
+    Orthology = ifelse(is.na(Orthology), "NA", Orthology),
+    Orthology = factor(
+      Orthology,
+      levels = c(
+        "ortholog_one2one",
+        "ortholog_one2many",
+        "ortholog_many2many",
+        "NA"
+      )
+    )
+  )
+
+write.csv(
+  bhlh_cumulative,
+  file.path(outdir, "bhlh_orthology_cumulative.csv"),
+  row.names = FALSE
+)
+
+# ============================================================
+# Plot settings
+# ============================================================
+
+orthology_colors <- c(
+  "ortholog_one2one" = "#009E73",
+  "ortholog_one2many" = "#56B4E9",
+  "ortholog_many2many" = "#D55E00",
+  "NA" = "#DDDDDD"
+)
+
+orthology_labels <- c(
+  "ortholog_one2one" = "One-to-one",
+  "ortholog_one2many" = "One-to-many / many-to-one",
+  "ortholog_many2many" = "Many-to-many",
+  "NA" = "NA"
+)
+
+# -----------------------------
+# Plot 1: bHLH orthology per species
+# -----------------------------
+
+p_bhlh_species <- bhlh_species %>%
+  ggplot(aes(x = Species, y = bHLH, fill = Orthology)) +
+  geom_tile(color = "gray90", linewidth = 0.2) +
+  facet_grid(
+    Family ~ .,
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
+  scale_fill_manual(
+    values = orthology_colors,
+    labels = orthology_labels,
+    drop = FALSE,
+    name = "Orthology"
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "bHLH orthology per species",
+    subtitle = "Human reference genes compared against selected species"
+  ) +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 6, hjust = 1),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    plot.title = element_text(face = "bold"),
+    legend.key.size = unit(0.45, "cm"),
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 9)
+  )
+
+ggsave(
+  file.path(outdir, "bhlh_orthology_per_species.pdf"),
+  p_bhlh_species,
+  device = "pdf",
+  height = 17,
+  width = 7
+)
+
+# -----------------------------
+# Plot 2: bHLH cumulative orthology
+# -----------------------------
+
+p_bhlh_cumulative <- bhlh_cumulative %>%
+  ggplot(aes(x = Level, y = bHLH, fill = Orthology)) +
+  geom_tile(color = "gray90", linewidth = 0.2) +
+  facet_grid(
+    Family ~ .,
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
+  scale_fill_manual(
+    values = orthology_colors,
+    labels = orthology_labels,
+    drop = FALSE,
+    name = "Orthology"
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "bHLH cumulative orthology",
+    subtitle = "Species are added progressively in the selected order"
+  ) +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 6, hjust = 1),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    plot.title = element_text(face = "bold"),
+    legend.key.size = unit(0.45, "cm"),
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 9)
+  )
+
+ggsave(
+  file.path(outdir, "bhlh_orthology_cumulative.pdf"),
+  p_bhlh_cumulative,
+  device = "pdf",
+  height = 17,
+  width = 8
+)
+
+# ============================================================
+# Facet-wrap version, more compact
+# ============================================================
+
+p_bhlh_species_wrap <- bhlh_species %>%
+  ggplot(aes(x = Species, y = bHLH, fill = Orthology)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  facet_wrap(
+    ~ Family,
+    scales = "free_y",
+    ncol = 4
+  ) +
+  scale_fill_manual(
+    values = orthology_colors,
+    labels = orthology_labels,
+    drop = FALSE,
+    name = "Orthology"
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "bHLH orthology per species"
+  ) +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 8),
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    plot.title = element_text(face = "bold"),
+    legend.key.size = unit(0.45, "cm")
+  )
+
+ggsave(
+  file.path(outdir, "bhlh_orthology_per_species_wrap.pdf"),
+  p_bhlh_species_wrap,
+  device = "pdf",
+  height = 10,
+  width = 12
+)
+
+# ============================================================
+# Alluvial plots
+# ============================================================
+
+make_alluvial_plot <- function(wide_df, axes, title, outfile, width = 10, height = 5) {
+  
+  plot_df <- wide_df %>%
+    mutate(across(all_of(axes), ~ ifelse(is.na(.x), "NA", as.character(.x)))) %>%
+    mutate(across(all_of(axes), ~ gsub("^ortholog_", "", .x))) %>%
+    count(across(all_of(axes)), name = "n")
+  
+  lodes_data <- ggalluvial::to_lodes_form(
+    plot_df,
+    axes = axes,
+    key = "axis",
+    value = "value"
+  )
+  
+  p <- ggplot(
+    lodes_data,
+    aes(
+      x = axis,
+      stratum = value,
+      alluvium = alluvium,
+      y = n,
+      label = value
+    )
+  ) +
+    geom_alluvium(aes(fill = value), alpha = 0.75) +
+    geom_stratum(aes(fill = value), color = "gray60") +
+    geom_text(
+      stat = "stratum",
+      aes(label = after_stat(stratum)),
+      size = 3
+    ) +
+    scale_x_discrete(
+      limits = axes,
+      expand = c(0.08, 0.08)
+    ) +
+    labs(
+      title = title,
+      x = NULL,
+      y = "Genes"
+    ) +
+    theme_void() +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+  
+  ggsave(
+    outfile,
+    p,
+    device = "pdf",
+    width = width,
+    height = height
+  )
+  
+  return(p)
+}
+
+# -----------------------------
+# Alluvial: all genes, per species
+# -----------------------------
+
+full_species_wide <- orthology_wide %>%
+  select(human_ensembl_gene_id, human_gene, all_of(species_order))
+
+p_alluvial_all_genes <- make_alluvial_plot(
+  wide_df = full_species_wide,
+  axes = species_order,
+  title = "Protein orthology transitions across species",
+  outfile = file.path(outdir, "alluvial_all_genes_per_species.pdf"),
+  width = 11,
+  height = 5
+)
+
+# -----------------------------
+# Alluvial: bHLH only, per species
+# -----------------------------
+
+bhlh_species_wide <- bhlh %>%
+  left_join(
+    orthology_wide %>%
+      select(human_gene, all_of(species_order)),
+    by = c("bHLH" = "human_gene")
+  )
+
+p_alluvial_bhlh <- make_alluvial_plot(
+  wide_df = bhlh_species_wide,
+  axes = species_order,
+  title = "bHLH orthology transitions across species",
+  outfile = file.path(outdir, "alluvial_bhlh_per_species.pdf"),
+  width = 11,
+  height = 5
+)
+
+# ============================================================
+# Barplots of statistics
+# ============================================================
+
+p_stats_species <- per_species_stats %>%
+  ggplot(aes(x = Species, y = n, fill = Orthology)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(
+    values = orthology_colors,
+    labels = orthology_labels,
+    drop = FALSE,
+    name = "Orthology"
+  ) +
+  labs(
+    x = NULL,
+    y = "Genes",
+    title = "Orthology counts per species"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+
+ggsave(
+  file.path(outdir, "orthology_counts_per_species.pdf"),
+  p_stats_species,
+  device = "pdf",
+  width = 7,
+  height = 5
+)
+
+p_stats_cumulative <- cumulative_stats %>%
+  ggplot(aes(x = Level, y = n, fill = Orthology)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(
+    values = orthology_colors,
+    labels = orthology_labels,
+    drop = FALSE,
+    name = "Orthology"
+  ) +
+  labs(
+    x = NULL,
+    y = "Genes",
+    title = "Cumulative orthology counts"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    plot.title = element_text(face = "bold")
+  )
+
+ggsave(
+  file.path(outdir, "orthology_counts_cumulative.pdf"),
+  p_stats_cumulative,
+  device = "pdf",
+  width = 8,
+  height = 5
+)
+
+# ============================================================
+# Done
+# ============================================================
+
+message("Analysis finished. Files saved in: ", outdir)

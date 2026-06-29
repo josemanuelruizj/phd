@@ -1,0 +1,2233 @@
+---
+title: "bHLH Binding Site Classification and Gene Proximity Analysis"
+author: "Josema"
+date: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(GenomicRanges)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+})
+```
+
+## 1. Read and Combine Input Files
+
+```{r read_files}
+files <- list.files('', pattern = '^chr.*\\.txt$', full.names = TRUE)
+
+read_chr_file <- function(f) {
+  chrom <- str_extract(basename(f), '^chr[^_]+')
+  lines <- readLines(f)
+  data_lines <- lines[!grepl('^#', lines)]
+  if (length(data_lines) == 0) return(NULL)
+  tmp <- tempfile(fileext = '.txt')
+  writeLines(data_lines, tmp)
+  df <- read.table(tmp, header = TRUE, sep = '', stringsAsFactors = FALSE)
+  df$chromosome <- chrom
+  df
+}
+
+tables <- map(files, read_chr_file)
+combined <- bind_rows(tables)
+```
+
+## 2. Classify bHLH Motif Type
+
+```{r classify_bhlh}
+ntg_to_can <- c('ATG'='CAT','CTG'='CAG','GTG'='CAC','TTG'='CAA')
+order_rank <- c('CAT'=4,'CAC'=3,'CAG'=2,'CAA'=1)
+
+combined <- combined %>%
+  mutate(
+    Sequence = toupper(Sequence),
+    half_plus  = substr(Sequence, 1, 3),
+    half_minus_raw = substr(Sequence, 4, 6),
+    half_minus = ntg_to_can[half_minus_raw],
+    bHLH_class = case_when(
+      is.na(half_plus) | is.na(half_minus) ~ NA_character_,
+      order_rank[half_plus] >= order_rank[half_minus] ~ paste0(half_plus, '-', half_minus),
+      TRUE ~ paste0(half_minus, '-', half_plus)
+    )
+  )
+```
+
+## 3. Load Gene Annotation
+
+```{r annotation}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+genes_gr <- genes(txdb)
+
+gene_symbols <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = as.character(genes_gr$gene_id),
+  columns = 'SYMBOL',
+  keytype = 'ENTREZID'
+)
+genes_gr$gene_name <- gene_symbols$SYMBOL[match(genes_gr$gene_id, gene_symbols$ENTREZID)]
+```
+
+## 4. Build GRanges of Regulatory Regions
+
+```{r regions}
+reg_gr <- GRanges(
+  seqnames = combined$chromosome,
+  ranges = IRanges(start = combined$Start, end = combined$End)
+)
+reg_sequences <- getSeq(BSgenome.Hsapiens.UCSC.hg38, reg_gr)
+```
+
+## 5. Find Genes Within 50 kb
+
+```{r overlaps}
+hits <- findOverlaps(reg_gr, genes_gr, maxgap = 50000)
+distances <- distance(reg_gr[queryHits(hits)], genes_gr[subjectHits(hits)])
+```
+
+## 6. Detailed Table (Distance, Orientation, Category, Sequence, bHLH Class)
+
+```{r detailed}
+detailed_table <- tibble(
+  regulator_chr = as.character(seqnames(reg_gr)[queryHits(hits)]),
+  regulator_start = start(reg_gr)[queryHits(hits)],
+  regulator_end = end(reg_gr)[queryHits(hits)],
+  regulator_seq = as.character(reg_sequences[queryHits(hits)]),
+  gene_name = genes_gr$gene_name[subjectHits(hits)],
+  gene_chr = as.character(seqnames(genes_gr)[subjectHits(hits)]),
+  gene_start = start(genes_gr)[subjectHits(hits)],
+  gene_end = end(genes_gr)[subjectHits(hits)],
+  gene_strand = as.character(strand(genes_gr)[subjectHits(hits)]),
+  distance = as.numeric(distances)
+) %>%
+  mutate(
+    orientation = case_when(
+      gene_strand == '+' & regulator_end < gene_start ~ '5prime_regulator',
+      gene_strand == '+' & regulator_start > gene_end ~ '3prime_regulator',
+      gene_strand == '-' & regulator_start > gene_end ~ '5prime_regulator',
+      gene_strand == '-' & regulator_end < gene_start ~ '3prime_regulator',
+      TRUE ~ 'overlap'
+    ),
+    category = case_when(
+      distance <= 5000 ~ 'promoter_proximal',
+      distance > 5000 & distance <= 50000 ~ 'enhancer_range',
+      TRUE ~ 'outside_range'
+    )
+  ) %>%
+  left_join(combined %>% select(chromosome, Start, End, Sequence, half_plus, half_minus, bHLH_class),
+            by = c('regulator_chr'='chromosome', 'regulator_start'='Start', 'regulator_end'='End'))
+```
+
+## 7. Summary Table Per Region
+
+```{r summary}
+summary_table <- detailed_table %>%
+  filter(category %in% c('promoter_proximal', 'enhancer_range')) %>%
+  group_by(regulator_chr, regulator_start, regulator_end, regulator_seq, bHLH_class) %>%
+  summarise(
+    proximal_genes = paste(unique(gene_name[category == 'promoter_proximal']), collapse = ', '),
+    enhancer_genes = paste(unique(gene_name[category == 'enhancer_range']), collapse = ', '),
+    proximal_orientation = paste(unique(orientation[category == 'promoter_proximal']), collapse = ', '),
+    enhancer_orientation = paste(unique(orientation[category == 'enhancer_range']), collapse = ', '),
+    .groups = 'drop'
+  )
+```
+
+```{r}
+library(AnnotationHub)
+ah <- AnnotationHub()
+
+# --- fetch tracks (hg38) ---
+bl   <- query(ah, c("blacklist","hg38"))[[1]]                 # ENCODE blacklist
+cyto <- query(ah, c("UCSC","cytoBand","hg38"))[[1]]           # cytoband → acen (centromere), telomere
+gap  <- query(ah, c("UCSC","gap","hg38"))[[1]]                # assembly gaps
+
+# segdupl
+
+library(rtracklayer)
+
+# Segmental duplications from UCSC (hg38)
+session <- browserSession("UCSC")
+genome(session) <- "hg38"
+query <- ucscTableQuery(session, track = "Segmental Dups", table = "genomicSuperDups")
+segd_df <- getTable(query)
+
+segd <- makeGRangesFromDataFrame(segd_df,
+                                 seqnames.field = "chrom",
+                                 start.field = "chromStart",
+                                 end.field = "chromEnd",
+                                 keep.extra.columns = TRUE)
+
+
+
+query <- ucscTableQuery(session, track = "Simple Repeats", table = "simpleRepeat")
+simp_df <- getTable(query)
+
+simp <- makeGRangesFromDataFrame(simp_df,
+                                 seqnames.field = "chrom",
+                                 start.field = "chromStart",
+                                 end.field = "chromEnd",
+                                 keep.extra.columns = TRUE)
+
+rmsk <- query(ah, c("RepeatMasker","hg38"))[[1]]# RepeatMasker
+centromeres <- cyto[grepl("acen", cyto$gieStain)]
+telomeres   <- cyto[grepl("telomere", cyto$name)]
+
+# useful subsets from RepeatMasker
+lowcomp    <- rmsk[which(tolower(mcols(rmsk)$repClass) %in% "low_complexity")]
+satellite  <- rmsk[]
+transposon <- rmsk[]
+```
+
+```{r}
+repClass <- tolower(mcols(rmsk)$repClass)
+lowcomp    <- rmsk[repClass == "low_complexity"]
+satellite  <- rmsk[repClass == "satellite"]
+transposon <- rmsk[repClass %in% c("sine", "line", "ltr", "dna")]
+
+# Añadimos etiquetas de clase
+mcols(lowcomp)$class    <- "low_complexity"
+mcols(satellite)$class  <- "satellite"
+mcols(transposon)$class <- repClass[repClass %in% c("sine", "line", "ltr", "dna")]
+
+# 2️⃣ Otras fuentes (Simple Repeats, Segmental Duplications, Centromeres, Telomeres)
+mcols(simp)$class        <- "simple_repeat"
+mcols(segd)$class        <- "segmental_duplication"
+mcols(centromeres)$class <- "centromere"
+
+# 3️⃣ Combinamos todo en un único GRanges
+problematic_regions <- c(lowcomp, satellite, transposon, simp, segd, centromeres)
+
+# 4️⃣ Nos quedamos solo con columnas básicas y “class”
+problematic_regions <- problematic_regions %>%
+  as.data.frame() %>%
+  dplyr::select(seqnames, start, end, class) %>%
+  makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+```
+
+## 8. Save Output Tables
+
+```{r save}
+write.table(detailed_table, 'regulator_gene_detailed_5p3p_seq.txt', sep='\t', quote=FALSE, row.names=FALSE)
+write.table(summary_table, 'regulator_gene_summary_5p3p_seq.txt', sep='\t', quote=FALSE, row.names=FALSE)
+```
+
+## 9. read detailed table
+
+```{r}
+
+```
+
+```{r}
+library(tidyverse)
+library(forcats)
+
+set.seed(123)
+
+# Simulamos datos tipo clusterProfiler::enrichGO
+classes <- c("CAT-CAT","CAT-CAC","CAT-CAG","CAC-CAC","CAG-CAG","CAA-CAC")
+terms <- paste("Neurogenesis term", 1:15)
+n <- length(classes) * length(terms)
+
+go_sim <- tibble(
+  Description = rep(terms, each = length(classes)),
+  bHLH_class = rep(classes, times = length(terms)),
+  p.adjust = runif(n, 1e-6, 0.1),
+  Count = sample(5:50, n, replace = TRUE)
+) %>%
+  mutate(negLog10FDR = -log10(p.adjust))
+
+# Seleccionamos los 15 términos más significativos
+top_terms <- go_sim %>%
+  group_by(Description) %>%
+  summarise(min_p = min(p.adjust)) %>%
+  slice_min(min_p, n = 15) %>%
+  pull(Description)
+
+go_plot_df <- go_sim %>% filter(Description %in% top_terms)
+
+# --- Dotplot tipo Enrichr ---
+ggplot(go_plot_df, aes(x = bHLH_class, y = fct_reorder(Description, negLog10FDR))) +
+  geom_point(aes(size = Count, color = negLog10FDR)) +
+  scale_color_viridis_c(option = "magma", direction = -1) +
+  scale_size_continuous(range = c(2, 8)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 9)
+  ) +
+  labs(
+    x = "bHLH motif class",
+    y = "GO Biological Process term",
+    color = "-log10(FDR)",
+    size = "Gene count",
+    title = "Simulated GO enrichment per bHLH motif class"
+  )
+
+```
+
+# trabajar con las tablas de María
+
+```{r}
+library(tidyverse)
+
+# Ruta al directorio
+dir_path <- "/projects_ng/MSA_HUMAN_SPECIFIC_ANALYSIS/raw/tsv/"
+
+# Listamos todos los .tsv.gz
+files <- list.files(dir_path, pattern = "\\.tsv\\.gz$", full.names = TRUE)
+
+# Leemos y fusionamos todas las tablas
+all_data <- files %>%
+  map_dfr(~ read_tsv(.x, show_col_types = FALSE))
+
+# Vistazo rápido
+print(dim(all_data))
+colnames(all_data)[1:10]
+
+
+filtered_data <- all_data %>%
+  dplyr::select(
+    chromosome,
+    position,
+    Homo_sapiens,
+    starts_with("Pan_"),
+    starts_with("Gorilla_"),
+    starts_with("Pongo_")
+  )
+
+filtered_data %>%  distinct(Pan_troglodytes)
+filtered_data
+```
+
+```{r}
+filtered_data <- all_data %>%
+  rowwise() %>%
+  mutate(
+    human_specific = {
+      human_base <- tolower(Homo_sapiens)
+      ape_bases <- c_across(starts_with("Pan_") | starts_with("Gorilla_") | starts_with("Pongo_"))
+      ape_bases <- tolower(ape_bases)
+      
+      # Sustituimos "." por base humana
+      ape_bases <- ifelse(ape_bases == ".", human_base, ape_bases)
+      
+      # Consideramos -/x o x/- como diferentes de humano
+      # (básicamente, cualquier cosa que contenga "-" la marcamos como diferente)
+      ape_bases_clean <- ifelse(grepl("-", ape_bases), "diff", ape_bases)
+      
+      # TRUE si todas son distintas del humano
+      all(ape_bases_clean != human_base)
+    }
+  ) %>%
+  ungroup()
+
+# Ver los casos human-specific
+filtered_data <- filtered_data %>%
+  dplyr::select(
+    chromosome,
+    position,
+    Homo_sapiens,
+    starts_with("Pan_"),
+    starts_with("Gorilla_"),
+    starts_with("Pongo_"),
+    human_specific
+  )
+
+filtered_data %>% 
+write_tsv(gzfile("all_positions_with_human_specific.tsv.gz"))
+```
+
+# Determine conservation of bHLH sites
+
+```{r}
+
+# === 1. Expandir las posiciones del motivo CANNTG (6 bases) ===
+CANNTG_expanded <- detailed_table %>%
+  mutate(length = regulator_end - regulator_start + 1) %>%
+  filter(length == 6) %>%  # aseguramos longitud 6
+  rowwise() %>%
+  mutate(position = list(regulator_start:regulator_end)) %>%
+  unnest(position) %>%
+  mutate(offset = position - regulator_start + 1) %>%
+  ungroup()
+
+# === 2. Hacer join con las posiciones human-specific ===
+joined <- CANNTG_expanded %>%
+  left_join(
+    filtered_data %>%
+      dplyr::select(chromosome, position, Pan_paniscus, human_specific),
+    by = c("regulator_chr" = "chromosome", "position" = "position")
+  )
+
+# === 3. Resumir de nuevo a una fila por motivo ===
+CANNTG_with_info <- joined %>%
+  group_by(regulator_chr, regulator_start, regulator_end, Sequence) %>%
+  summarise(
+    Pan_paniscus_seq = paste0(Pan_paniscus, collapse = ""),
+    HS_pos1 = any(offset == 1 & human_specific, na.rm = TRUE),
+    HS_pos2 = any(offset == 2 & human_specific, na.rm = TRUE),
+    HS_pos3 = any(offset == 3 & human_specific, na.rm = TRUE),
+    HS_pos4 = any(offset == 4 & human_specific, na.rm = TRUE),
+    HS_pos5 = any(offset == 5 & human_specific, na.rm = TRUE),
+    HS_pos6 = any(offset == 6 & human_specific, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# === 4. Guardar el resultado ===
+write_tsv(CANNTG_with_info,
+          "/projects_ng/MSA_HUMAN_SPECIFIC_ANALYSIS/merged/CANNTG_with_HS.tsv")
+
+```
+
+```{r}
+library(rtracklayer)
+
+session <- browserSession("UCSC")
+genome(session) <- "hg38"
+
+# coordenadas humanas
+gr <- GRanges(seqnames="chr16", ranges=IRanges(start=21166373, end=21166376))
+
+# descargas el bloque MAF
+maf <- getTable(ucscTableQuery(session, 
+                               track="Zoonomia+Primates 447", 
+                               table="cactus447way", 
+                               range=gr))
+
+```
+
+## Human snp's comunes
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+# Lee tus posiciones
+positions <- data.frame(
+  chr = c("16", "16", "1"),
+  pos = c(28540000, 28540200, 10012345)
+)
+
+# Función para consultar Ensembl API
+get_snp_info <- function(chr, pos) {
+  url <- paste0("https://rest.ensembl.org/overlap/region/human/",
+                chr, ":", pos, "-", pos,
+                "?feature=variation;content-type=application/json")
+  
+  res <- GET(url)
+  if (status_code(res) != 200) return(NULL)
+  
+  data <- fromJSON(content(res, as = "text", encoding = "UTF-8"))
+  if (length(data) == 0) return(NULL)
+  
+  df <- as.data.frame(data)
+  df <- df %>%
+    select(id, start, end, strand, consequence_type, minor_allele_freq, minor_allele, source) %>%
+    mutate(chr = chr)
+  
+  return(df)
+}
+
+# Ejecutar para todas tus posiciones
+snp_results <- purrr::map2_df(positions$chr, positions$pos, get_snp_info)
+
+# Si quieres quedarte solo con SNPs comunes (>1%)
+snp_common <- snp_results %>%
+  filter(!is.na(minor_allele_freq) & minor_allele_freq > 0.01)
+
+snp_common
+
+```
+
+# PLOTS
+
+```{r}
+library(tidyverse)
+detailed <- read_table('regulator_gene_detailed_5p3p_seq.txt')
+```
+
+```{r}
+###############################################
+## CREAR CARPETA + QUITAR DUPLICADOS        ##
+###############################################
+
+library(tidyverse)
+library(ggseqlogo)
+
+# Crear carpeta si no existe
+dir.create("bhlh_evolution_analysis", showWarnings = FALSE)
+
+# Quitar duplicados reales de secuencias reguladoras
+detailed_unique <- detailed %>%
+  distinct(regulator_chr, regulator_start, regulator_end, Sequence,bHLH_class, .keep_all = TRUE)
+
+library(GenomeInfoDb)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+genome <- BSgenome.Hsapiens.UCSC.hg38
+
+
+chrom_sizes <- seqlengths(genome) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("chrom") %>%
+  dplyr::rename(size = 2) %>%
+  dplyr::filter(chrom %in% c(paste0("chr", 1:22), "chrX", "chrY"))
+
+
+#######################################################
+## 1) Nº de secuencias por cromosoma (sin duplicados)
+#######################################################
+
+chrom_order <- c(
+  paste0("chr", 1:22),
+  "chrX",
+  "chrY"
+)
+
+p1 <- detailed_unique %>% 
+  count(regulator_chr) %>% 
+  mutate(regulator_chr = factor(regulator_chr, levels = chrom_order)) %>%
+  ggplot(aes(x = regulator_chr, y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Número de elementos únicos por cromosoma",
+       x = "Cromosoma", y = "N elementos únicos") +
+  theme_minimal()+
+  theme(aspect.ratio = 1.2)
+
+ggsave("bhlh_evolution_analysis/01_n_por_cromosoma.png",
+       p1, width = 7, height = 6, dpi = 300)
+
+
+
+p2 <- detailed_unique %>% 
+  count(regulator_chr,bHLH_class ) %>% 
+  mutate(regulator_chr = factor(regulator_chr, levels = chrom_order)) %>%
+  ggplot(aes(x = regulator_chr, y = n, fill=bHLH_class)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Número de elementos únicos por cromosoma",
+       x = "Cromosoma", y = "N elementos únicos") +
+  theme_minimal()+
+    theme(aspect.ratio = 1.2)
+
+
+ggsave("bhlh_evolution_analysis/02_n_por_cromosoma_per_class.png",
+       p2, width = 7, height = 6, dpi = 300)
+
+#######################################################
+## 2) Proporción de bases por cromosoma (posición 1)
+
+p3 <- detailed_unique %>% 
+  count(bHLH_class) %>% 
+  ggplot(aes(x = bHLH_class, y = n, fill=bHLH_class)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Número de elementos únicos por cromosoma",
+       x = "Cromosoma", y = "N elementos únicos") +
+  theme_minimal()+
+    theme(aspect.ratio = 1.2)
+
+
+ggsave("bhlh_evolution_analysis/03_n_class.png",
+       p3, width = 7, height = 6, dpi = 300)
+
+
+####################################################
+
+sites_by_chr <- detailed_unique %>%
+  count(regulator_chr, name = "n_sites") %>%
+  left_join(chrom_sizes, by = c("regulator_chr" = "chrom")) %>%
+  mutate(
+    size_mb = size / 1e6,
+    density = n_sites / size_mb,
+    regulator_chr = factor(regulator_chr, levels = chrom_order)
+  )
+
+p_density <- sites_by_chr %>%
+  ggplot(aes(x = regulator_chr, y = density)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Densidad de sitios reguladores por cromosoma (sitios por Mb)",
+    x = "Cromosoma",
+    y = "Sitios / Mb"
+  ) +
+  theme_minimal() +
+  theme(aspect.ratio = 1)
+ggsave("bhlh_evolution_analysis/04_density_por_cromosoma.png",
+       p_density, width = 7, height = 6, dpi = 300)
+
+
+
+
+
+
+
+#######################################################
+## 4) Distancia al gen más cercano (log10)
+#######################################################
+
+p4 <- detailed_table %>% 
+  ggplot(aes(x = distance)) +
+  geom_histogram(bins = 60) +
+  scale_x_log10() +
+  labs(title = "Distancia al gen más cercano (únicos, log10)",
+       x = "Distancia (bp, log10)", y = "Frecuencia") +
+  theme_minimal()
+
+ggsave("bhlh_evolution_analysis/04_distance_hist.png",
+       p4, width = 7, height = 6, dpi = 300)
+
+#######################################################
+## 5) Distancia vs cromosoma (boxplot)
+#######################################################
+
+p5 <- detailed_unique %>% 
+  ggplot(aes(x = regulator_chr, y = distance)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  scale_y_log10() +
+  labs(title = "Distancia al gen por cromosoma (únicos, log10)",
+       x = "Cromosoma", y = "Distancia (log10)") +
+  theme_minimal() +
+  coord_flip()
+
+ggsave("bhlh_evolution_analysis/05_distance_boxplot.png",
+       p5, width = 8, height = 7, dpi = 300)
+
+#######################################################
+## 6) Clase bHLH por cromosoma
+#######################################################
+
+p6 <- detailed_unique %>% 
+  ggplot(aes(x = regulator_chr, fill = bHLH_class)) +
+  geom_bar(position = "fill") +
+  labs(title = "Distribución de clases bHLH por cromosoma (únicos)",
+       x = "Cromosoma", y = "Proporción") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("bhlh_evolution_analysis/06_bHLH_class_por_cromosoma.png",
+       p6, width = 9, height = 6, dpi = 300)
+
+#######################################################
+## 7) Scatter longitud vs distancia
+#######################################################
+
+p7 <- detailed2 %>% 
+  ggplot(aes(x = len, y = distance, color = regulator_chr)) +
+  geom_point(alpha = 0.6) +
+  scale_y_log10() +
+  scale_x_log10() +
+  labs(title = "Longitud vs distancia al gen (únicos)",
+       x = "Longitud (bp, log10)", y = "Distancia (bp, log10)") +
+  theme_minimal()
+
+ggsave("bhlh_evolution_analysis/07_len_vs_dist.png",
+       p7, width = 7, height = 6, dpi = 300)
+
+#######################################################
+## 8) Orientación
+#######################################################
+
+p8 <- detailed_unique %>% 
+  ggplot(aes(x = orientation)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Orientación enhancer ↔ gen (únicos)",
+       y = "Frecuencia") +
+  theme_minimal()
+
+ggsave("bhlh_evolution_analysis/08_orientacion.png",
+       p8, width = 6, height = 5, dpi = 300)
+
+#######################################################
+## 9) Logo de secuencias
+#######################################################
+
+p9 <- ggseqlogo(detailed_unique$Sequence) +
+  ggtitle("Logo de secuencias reguladoras (únicas)")
+
+ggsave("bhlh_evolution_analysis/09_seqlogo.png",
+       p9, width = 9, height = 4, dpi = 300)
+
+```
+
+# evolucion de las regiones reguladoras
+
+```{r}
+# Cargar los datos de las diferentes especies 
+
+calJac4 <- read_table('eboxes_conservation/positions/primates/original_coord/calJac4_eboxes.tab') %>%    filter(SeqName!='SeqName') %>% mutate(Start=Start-1) 
+
+# 0) añade id de fila para merge estable
+calJac4_id <- calJac4 %>%
+  mutate(row_id = row_number())
+
+# 1) separa filas válidas (sin NA en coords) para evitar warnings
+calJac4_clean <- calJac4_id %>%
+  filter(!is.na(SeqName), !is.na(Start), !is.na(End), Start > 0, End > 0, End >= Start)
+
+# 2) GRanges + metadata
+gr <- GRanges(
+  seqnames = calJac4_clean$SeqName,
+  ranges   = IRanges(start = calJac4_clean$Start, end = calJac4_clean$End),
+  strand   = calJac4_clean$Strand
+)
+mcols(gr) <- calJac4_clean %>% select(row_id)
+
+# 3) liftover
+lo <- liftOver(gr, ch)
+nmap <- lengths(lo)
+
+mapped_idx <- which(nmap > 0)
+mapped_gr  <- unlist(lo[mapped_idx], use.names = FALSE)
+
+# map de cada output a su input row_id
+orig_rep <- rep(mapped_idx, nmap[mapped_idx])
+mcols(mapped_gr) <- mcols(gr)[orig_rep, , drop = FALSE]
+mcols(mapped_gr)$n_mapped <- nmap[orig_rep]
+
+mapped_df <- as.data.frame(mapped_gr) %>%
+  transmute(
+    row_id,
+    n_mapped,
+    hg38_SeqName = as.character(seqnames),
+    hg38_Start   = start,
+    hg38_End     = end,
+    hg38_Strand  = as.character(strand)
+  )
+
+# 4) tabla final: original + columnas hg38 (y unmapped quedan NA)
+calJac4_hg38 <- calJac4_id %>%
+  left_join(mapped_df, by = "row_id") %>%
+  mutate(n_mapped = ifelse(is.na(n_mapped), 0L, n_mapped)) %>%
+  arrange(row_id, desc(n_mapped)) %>%
+  select(-row_id) %>%  
+  as_tibble()
+
+
+
+calJac4_hg38 
+```
+
+
+
+```{r}
+liftover_table_to_hg38 <- function(df,
+                                  chain_path,
+                                  seq_col   = "SeqName",
+                                  start_col = "Start",
+                                  end_col   = "End",
+                                  strand_col= "Strand",
+                                  keep_cols = NULL,
+                                  start_is_0_based = FALSE) {
+
+  # deps (para que no falle por no tener library() antes)
+  stopifnot(requireNamespace("dplyr", quietly = TRUE))
+  stopifnot(requireNamespace("rtracklayer", quietly = TRUE))
+  stopifnot(requireNamespace("GenomicRanges", quietly = TRUE))
+  stopifnot(requireNamespace("IRanges", quietly = TRUE))
+
+  stopifnot(file.exists(chain_path))
+
+  # opcional: mantener solo ciertas cols (además de las obligatorias)
+  if (!is.null(keep_cols)) {
+    need <- unique(c(seq_col, start_col, end_col, strand_col, keep_cols))
+    df <- df[, intersect(need, colnames(df)), drop = FALSE]
+  }
+
+  df_id <- df |>
+    dplyr::mutate(row_id = dplyr::row_number())
+
+  # si Start/End vienen como character, los convertimos
+  df_id[[start_col]] <- suppressWarnings(as.integer(df_id[[start_col]]))
+  df_id[[end_col]]   <- suppressWarnings(as.integer(df_id[[end_col]]))
+
+  # si tus coords eran BED (0-based), convertimos a 1-based para GRanges
+  if (isTRUE(start_is_0_based)) {
+    df_id[[start_col]] <- df_id[[start_col]] + 1L
+  }
+
+  # filas válidas para GRanges
+  valid <- df_id |>
+    dplyr::filter(
+      !is.na(.data[[seq_col]]),
+      !is.na(.data[[start_col]]),
+      !is.na(.data[[end_col]]),
+      .data[[start_col]] > 0,
+      .data[[end_col]] > 0,
+      .data[[end_col]] >= .data[[start_col]]
+    )
+
+  df_id <- df_id |>
+    dplyr::mutate(status = ifelse(row_id %in% valid$row_id, "to_liftover", "bad_input"))
+
+  if (nrow(valid) == 0) {
+    return(df_id |>
+             dplyr::mutate(
+               n_mapped = 0L,
+               hg38_SeqName = NA_character_,
+               hg38_Start = NA_integer_,
+               hg38_End = NA_integer_,
+               hg38_Strand = NA_character_
+             ) |>
+             dplyr::select(-row_id))
+  }
+
+  ch <- rtracklayer::import.chain(chain_path)
+
+  gr <- GenomicRanges::GRanges(
+    seqnames = valid[[seq_col]],
+    ranges   = IRanges::IRanges(start = valid[[start_col]], end = valid[[end_col]]),
+    strand   = valid[[strand_col]]
+  )
+  GenomicRanges::mcols(gr)$row_id <- valid$row_id
+
+  lo <- rtracklayer::liftOver(gr, ch)
+  nmap <- S4Vectors::elementNROWS(lo)  # equivalente a lengths(lo), pero más S4-friendly
+
+  mapped_idx <- which(nmap > 0)
+  mapped_gr  <- unlist(lo[mapped_idx], use.names = FALSE)
+
+  orig_rep <- rep(mapped_idx, nmap[mapped_idx])
+  GenomicRanges::mcols(mapped_gr)$row_id   <- GenomicRanges::mcols(gr)$row_id[orig_rep]
+  GenomicRanges::mcols(mapped_gr)$n_mapped <- nmap[orig_rep]
+
+  mapped_df <- as.data.frame(mapped_gr) |>
+    dplyr::transmute(
+      row_id,
+      n_mapped,
+      hg38_SeqName = as.character(seqnames),
+      hg38_Start   = start,
+      hg38_End     = end,
+      hg38_Strand  = as.character(strand)
+    )
+
+  out <- df_id |>
+    dplyr::left_join(mapped_df, by = "row_id") |>
+    dplyr::mutate(
+      n_mapped = ifelse(is.na(n_mapped), 0L, n_mapped),
+      status = dplyr::case_when(
+        status == "bad_input" ~ "bad_input",
+        n_mapped > 0 ~ "mapped",
+        TRUE ~ "unmapped"
+      )
+    ) |>
+    dplyr::arrange(row_id, dplyr::desc(n_mapped)) |>
+    dplyr::select(-row_id)
+
+  out
+}
+
+```
+
+
+```{r}
+library(readr)
+library(dplyr)
+
+in_dir    <- "/users/genomics/josema/eboxes_conservation/positions/primates/original_coord"
+chain_dir <- "/users/genomics/josema/eboxes_conservation/positions/primates/chains"
+out_dir   <- "/users/genomics/josema/eboxes_conservation/positions/primates/hg38_coord"
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+files <- list.files(path=in_dir, full.names = TRUE)
+
+for (f in files) {
+
+  genome <- sub("_eboxes\\.tab$", "", basename(f))
+  chain_path <- file.path(chain_dir, paste0(genome, "ToHg38.over.chain"))
+
+  if (!file.exists(chain_path)) {
+    message("[SKIP] No chain para ", genome)
+    next
+  }
+
+  df <- readr::read_tsv(f, show_col_types = FALSE)
+
+  out <- liftover_table_to_hg38(
+    df = df,
+    chain_path = chain_path
+  )
+
+  out_file <- file.path(out_dir, paste0(genome, "_eboxes.hg38.tsv"))
+  readr::write_tsv(out, out_file)
+
+  message("[OK] ", genome, " → ", nrow(out), " filas")
+}
+
+```
+
+# merge especies
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(purrr)
+  library(stringr)
+})
+
+# carpeta donde guardaste los outputs
+out_dir <- "/users/genomics/josema/eboxes_conservation/positions/primates/hg38_coord"
+
+files <- list.files(out_dir, pattern = "_eboxes\\.hg38\\.tsv$", full.names = TRUE)
+
+# helper: construir "chr:start-end"
+mk_pos <- function(chr, start, end) {
+  ifelse(is.na(chr) | is.na(start) | is.na(end),
+         NA_character_,
+         paste0(chr, ":", start, "-", end))
+}
+
+# helper: sacar la secuencia del motif
+# 1) si existe columna "Seq" o "Sequence" la usa
+# 2) si no, intenta extraer de Pattern tipo "pattern1:CAAATG"
+get_seq <- function(df) {
+  if ("Seq" %in% names(df)) return(as.character(df$Seq))
+  if ("Sequence" %in% names(df)) return(as.character(df$Sequence))
+  if ("Pattern" %in% names(df)) {
+    return(str_replace(as.character(df$Pattern), "^.*:", "")) # lo que va tras :
+  }
+  rep(NA_character_, nrow(df))
+}
+
+make_species_table <- function(f) {
+  sp <- sub("_eboxes\\.hg38\\.tsv$", "", basename(f))  # ej: gorGor4
+
+  df <- readr::read_tsv(f, show_col_types = FALSE, progress = FALSE)
+
+  df2 <- df %>%
+    mutate(
+      hg38Position = mk_pos(hg38_SeqName, hg38_Start, hg38_End),
+      origPosition = mk_pos(SeqName, Start, End),
+      origSeq = get_seq(df)
+    ) %>%
+    # nos quedamos con las columnas que queremos
+    select(hg38Position, origPosition, origSeq) %>%
+    # si hay filas sin hg38Position (unmapped/bad), no sirven para join por humano
+    filter(!is.na(hg38Position)) %>%
+    # colapsar si una especie tiene varias entradas para el mismo hg38Position
+    group_by(hg38Position) %>%
+    summarise(
+      "{sp}position" := paste(unique(origPosition), collapse = ";"),
+      "{sp}Seq"      := paste(unique(origSeq), collapse = ";"),
+      .groups = "drop"
+    )
+
+  df2
+}
+
+tables <- lapply(files, make_species_table)
+
+# full join de TODO usando hg38Position como índice
+all_species_by_hg38 <- purrr::reduce(tables, dplyr::full_join, by = "hg38Position")
+
+all_species_by_hg38
+
+```
+
+# merge más rapido 
+
+
+```{r}
+# Repite el bloque de codigo anterior pero con alguna alternativa más rapida 
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(data.table)
+  library(stringr)
+}) 
+# carpeta donde guardaste los outputs 
+out_dir <- "/users/genomics/josema/eboxes_conservation/positions/primates/hg38_coord"
+files <- list.files(out_dir, pattern = "_eboxes\\.hg38\\.tsv$", full.names = TRUE)
+# helper: construir "chr:start-end"
+mk_pos <- function(chr, start, end) {
+  ifelse(is.na(chr) | is.na(start) | is.na(end),
+         NA_character_,
+         paste0(chr, ":", start, "-", end))
+}
+# helper: sacar la secuencia del motif
+# 1) si existe columna "Seq" o "Sequence" la usa
+get_seq <- function(df) {
+  if ("Seq" %in% names(df)) return(as.character(df$Seq))
+  if ("Sequence" %in% names(df)) return(as.character(df$Sequence))
+  if ("Pattern" %in% names(df)) {
+    return(str_replace(as.character(df$Pattern), "^.*:", "")) # lo que va tras :
+  }
+  rep(NA_character_, nrow(df))
+}
+make_species_table <- function(f) {
+  sp <- sub("_eboxes\\.hg38\\.tsv$", "", basename(f))  # ej: gorGor4
+  df <- fread(f)
+  df[, hg38Position := mk_pos(hg38_SeqName, hg38_Start, hg38_End)]
+  df[, origPosition := mk_pos(SeqName, Start, End)]
+  df[, origSeq := get_seq(df)]
+  df2 <- df[!is.na(hg38Position), .(
+    position = paste(unique(origPosition), collapse = ";"),
+    seq = paste(unique(origSeq), collapse = ";")
+  ), by = hg38Position]
+  setnames(df2, c("hg38Position", paste0(sp, "position"), paste0(sp, "Seq")))
+  return(df2)
+}
+tables <- lapply(files, make_species_table)
+all_species_by_hg38 <- Reduce(function(x, y) merge(x, y, by = "hg38Position", all = TRUE), tables)
+
+all_species_by_hg38 %>% saveRDS('eboxes_conservation/positions/primates/combined_positions_hg38_coord.rds')
+
+
+```
+
+```{r}
+## ============================================================
+## Generar clasificación bHLH dimer (CAN-CAN) desde *Seq columns
+## ============================================================
+
+# Función para clasificar un motivo CANNTG → CAN-CAN
+# Normaliza orientación: CAT-CAG == CAG-CAT
+classify_bhlh_dimer <- function(seq) {
+  if (is.na(seq) || nchar(seq) != 6) return(NA_character_)
+
+  seq <- toupper(seq)
+
+  # Half-sites
+  left  <- substr(seq, 1, 3)   # CAN
+  right <- substr(seq, 4, 6)   # NTG
+
+  # Reverse complement del segundo half-site
+  rc_right <- chartr("ACGT", "TGCA", right)
+  rc_right <- paste0(rev(strsplit(rc_right, "")[[1]]), collapse = "")
+
+  # Ordenar para colapsar simetrías (CAT-CAG == CAG-CAT)
+  halves <- sort(c(left, rc_right))
+
+  paste0(halves[1], "-", halves[2])
+}
+
+# Copia de la tabla original
+bhlh_class_dimer <- all_species_by_hg38
+
+# Detectar automáticamente columnas de secuencia (*Seq)
+seq_cols <- grep("Seq$", colnames(bhlh_class_dimer), value = TRUE)
+
+# Generar columnas *_bhlh_class por especie
+for (col in seq_cols) {
+  new_col <- sub("Seq$", "_bhlh_class", col)
+
+  bhlh_class_dimer[[new_col]] <-
+    vapply(
+      bhlh_class_dimer[[col]],
+      classify_bhlh_dimer,
+      character(1)
+    )
+}
+
+# guardar bhblh_class_dimer
+bhlh_class_dimer %>%
+  saveRDS('eboxes_conservation/positions/primates/combined_positions_hg38_coord_bhlh_dimer.rds')
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(ggalluvial)
+  library(stringr)
+})
+
+## ===========
+## 1) Elegir especies y orden en el eje X
+## ===========
+# Columnas disponibles tipo: gorGor4_bhlh_class, panTro6_bhlh_class, etc.
+bhlh_cols <- grep("_bhlh_class$", names(bhlh_class_dimer), value = TRUE)
+
+# Pon aquí el ORDEN que quieres en el Sankey (X)
+# (edita esta lista; si alguna no existe, se ignora)
+species_order <- c(
+  "calJac4_bhlh_class",
+  "papAnu4_bhlh_class",
+  "nomLeu3_bhlh_class",
+  'rheMac10_bhlh_class',
+  "ponAbe3_bhlh_class",
+  "gorGor4_bhlh_class",
+  "panTro5_bhlh_class")
+
+use_cols <- species_order[species_order %in% bhlh_cols]
+if (length(use_cols) < 2) stop("Necesito al menos 2 especies en 'use_cols' que existan en bhlh_class_dimer.")
+
+axis_names <- sub("_bhlh_class$", "", use_cols)  # nombres limpios para el eje
+
+## ===========
+## 2) Dataset “pattern-based”: cada alluvium = un patrón de cambios, peso = nº posiciones
+## ===========
+pattern_df <- bhlh_class_dimer %>%
+  select(hg38Position, all_of(use_cols)) %>%
+  # Si quieres incluir NAs como categoría, cambia drop_na() por replace_na(list(col="NA"))
+  # cuenta cuántas posiciones comparten exactamente el mismo patrón a través de especies
+  count(across(all_of(use_cols)), name = "n") %>%
+  # crea un id de patrón (para que ggalluvial sepa qué cinta es cuál)
+  mutate(pattern_id = row_number())
+
+# renombra columnas para que el eje X sean especies con nombres limpios
+names(pattern_df)[match(use_cols, names(pattern_df))] <- axis_names
+
+## ===========
+## 3) Convertir a formato lodes (species, class, pattern_id, n)
+## ===========
+lodes <- pattern_df %>%
+  pivot_longer(cols = all_of(axis_names),
+               names_to = "species",
+               values_to = "bhlh_class") %>%
+  mutate(species = factor(species, levels = axis_names))
+
+## ===========
+## 4) Plot Sankey / alluvial
+## ===========
+p <- ggplot(lodes,
+            aes(x = species,
+                stratum = bhlh_class,
+                alluvium = pattern_id,
+                y = n)) +
+  geom_flow(alpha = 0.6) +
+  geom_stratum(width = 1/10) +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  labs(
+    x = "Especie",
+    y = "Nº posiciones (hg38Position)",
+    title = "Sankey de cambios de clase bHLH (CAN-CAN) entre especies",
+    subtitle = paste(axis_names, collapse = " → ")
+  ) +
+  theme_minimal()
+
+pdf("eboxes_conservation/bhlh_class_sankey.pdf", width = 10, height = 6)
+print(p)
+dev.off()
+
+```
+
+# variabilidad intra especifica humano
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(Rsamtools)
+  library(Biostrings)
+  library(readr)
+})
+
+# -------------------------
+# INPUTS (cambia estas rutas)
+# -------------------------
+fasta_path <- "hg38.fa"              # tu genoma (hg38/hg19/lo que sea)
+variants_tsv <- "variants.core.tsv"  # columnas: CHROM POS ID REF ALT (ALT puede tener comas)
+out_tsv <- "variants.context_plusminus5.tsv"
+
+flank <- 5L  # +-5 nt => 11-mer
+
+# -------------------------
+# 1) FASTA index (si falta)
+# -------------------------
+if (!file.exists(paste0(fasta_path, ".fai"))) {
+  message("Indexando FASTA (.fai) ...")
+  Rsamtools::indexFa(fasta_path)
+}
+
+fa <- Rsamtools::FaFile(fasta_path)
+open(fa)
+
+# -------------------------
+# 2) Leer y expandir multi-ALT
+# -------------------------
+df <- read_tsv(
+  variants_tsv,
+  col_names = c("chrom", "pos", "id", "ref", "alt"),
+  col_types = cols(
+    chrom = col_character(),
+    pos   = col_integer(),
+    id    = col_character(),
+    ref   = col_character(),
+    alt   = col_character()
+  )
+) %>%
+  mutate(
+    ref = toupper(ref),
+    alt = toupper(alt)
+  ) %>%
+  separate_rows(alt, sep = ",") %>%   # multi-ALT -> varias filas
+  mutate(
+    is_snv = nchar(ref) == 1 & nchar(alt) == 1
+  ) %>%
+  filter(is_snv) %>%
+  select(-is_snv)
+
+# -------------------------
+# 3) Función: extrae contexto referencia y crea alternativo
+# -------------------------
+get_contexts_pm5 <- function(chrom, pos1, ref_base, alt_base, flank, fa) {
+  # POS en VCF es 1-based
+  start <- pos1 - flank
+  end   <- pos1 + flank
+
+  # scanFa usa coordenadas 1-based, pero no puede ir <1
+  if (start < 1) start <- 1
+
+  gr <- GenomicRanges::GRanges(
+    seqnames = chrom,
+    ranges = IRanges::IRanges(start = start, end = end)
+  )
+
+  ref_ctx <- as.character(Biostrings::getSeq(fa, gr))
+  ref_ctx <- toupper(ref_ctx)
+
+  # centro siempre es la posición original dentro del string:
+  # ojo: si start se recortó por estar cerca del inicio del cromosoma
+  center_idx <- (pos1 - start) + 1L
+
+  # Validación ref contra FASTA
+  ref_in_fa <- if (center_idx >= 1 && center_idx <= nchar(ref_ctx)) {
+    substr(ref_ctx, center_idx, center_idx)
+  } else {
+    NA_character_
+  }
+  ok <- !is.na(ref_in_fa) && ref_in_fa == toupper(ref_base)
+
+  # Construye alt_ctx sustituyendo base central
+  alt_ctx <- ref_ctx
+  if (!is.na(ref_in_fa)) {
+    substr(alt_ctx, center_idx, center_idx) <- toupper(alt_base)
+  }
+
+  list(ref_ctx = ref_ctx, alt_ctx = alt_ctx, ok = ok)
+}
+
+# -------------------------
+# 4) Aplicar a todas las filas
+# -------------------------
+# Nota: esto es simple y suficientemente rápido para miles/decenas de miles.
+# Si te vas a millones, lo vectorizamos / chunking.
+res <- df %>%
+  rowwise() %>%
+  mutate(tmp = list(get_contexts_pm5(chrom, pos, ref, alt, flank, fa))) %>%
+  mutate(
+    ref_context_pm5 = tmp$ref_ctx,
+    alt_context_pm5 = tmp$alt_ctx,
+    ref_matches_fasta = tmp$ok
+  ) %>%
+  ungroup() %>%
+  select(-tmp)
+
+# -------------------------
+# 5) Guardar
+# -------------------------
+write_tsv(res, out_tsv)
+
+close(fa)
+
+message("OK -> ", out_tsv, " (", nrow(res), " filas)")
+
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(Rsamtools)
+  library(Biostrings)
+  library(readr)
+})
+
+# -------------------------
+# INPUTS (cambia estas rutas)
+# -------------------------
+fasta_path <- "~/ref_genomes/Hom_sap/hg38.fa"              # tu genoma (hg38/hg19/lo que sea)
+variants_tsv <- "~/multiome/vcf_table.tsv"  # columnas: CHROM POS ID REF ALT (ALT puede tener comas)
+out_tsv <- "~/multiome/variants.context_plusminus5.tsv"
+
+flank <- 5L  # +-5 nt => 11-mer
+
+# -------------------------
+# 1) FASTA index (si falta)
+# -------------------------
+if (!file.exists(paste0(fasta_path, ".fai"))) {
+  message("Indexando FASTA (.fai) ...")
+  Rsamtools::indexFa(fasta_path)
+}
+
+fa <- Rsamtools::FaFile(fasta_path)
+open(fa)
+
+
+# -------------------------
+# 2) Leer y expandir multi-ALT
+# -------------------------
+df <- read_tsv(
+  variants_tsv,
+  col_names = c("chrom", "pos", "id", "ref", "alt", "qual", "filter", "AF"),
+  col_types = cols(
+    chrom = col_character(),
+    pos   = col_integer(),
+    id    = col_character(),
+    ref   = col_character(),
+    alt  = col_character(),
+    qual   = col_character(),
+    filter = col_character(),
+    AF     = col_character()
+  )
+) %>%
+  mutate(
+    ref = toupper(ref),
+    alt = toupper(alt)
+  ) %>%
+  separate_rows(alt, sep = ",") %>%   # multi-ALT -> varias filas
+  mutate(
+    is_snv = nchar(ref) == 1 & nchar(alt) == 1
+  ) %>%
+  filter(is_snv) %>%
+  select(-is_snv)
+
+# -------------------------
+# 3) Función: extrae contexto referencia y crea alternativo
+# -------------------------
+get_contexts_pm5 <- function(chrom, pos1, ref_base, alt_base, flank, fa) {
+  # POS en VCF es 1-based
+  start <- pos1 - flank
+  end   <- pos1 + flank
+
+  # scanFa usa coordenadas 1-based, pero no puede ir <1
+  if (start < 1) start <- 1
+
+  gr <- GenomicRanges::GRanges(
+    seqnames = chrom,
+    ranges = IRanges::IRanges(start = start, end = end)
+  )
+
+  ref_ctx <- as.character(Biostrings::getSeq(fa, gr))
+  ref_ctx <- toupper(ref_ctx)
+
+  # centro siempre es la posición original dentro del string:
+  # ojo: si start se recortó por estar cerca del inicio del cromosoma
+  center_idx <- (pos1 - start) + 1L
+
+  # Validación ref contra FASTA
+  ref_in_fa <- if (center_idx >= 1 && center_idx <= nchar(ref_ctx)) {
+    substr(ref_ctx, center_idx, center_idx)
+  } else {
+    NA_character_
+  }
+  ok <- !is.na(ref_in_fa) && ref_in_fa == toupper(ref_base)
+
+  # Construye alt_ctx sustituyendo base central
+  alt_ctx <- ref_ctx
+  if (!is.na(ref_in_fa)) {
+    substr(alt_ctx, center_idx, center_idx) <- toupper(alt_base)
+  }
+
+  list(ref_ctx = ref_ctx, alt_ctx = alt_ctx, ok = ok)
+}
+
+# -------------------------
+# 4) Aplicar a todas las filas
+# -------------------------
+# Nota: esto es simple y suficientemente rápido para miles/decenas de miles.
+# Si te vas a millones, lo vectorizamos / chunking.
+res <- df %>%
+  mutate(chrom=paste0("chr",chrom)) %>% 
+  rowwise() %>%
+  mutate(tmp = list(get_contexts_pm5(chrom, pos, ref, alt, flank, fa))) %>%
+  mutate(
+    ref_context_pm5 = tmp$ref_ctx,
+    alt_context_pm5 = tmp$alt_ctx,
+    ref_matches_fasta = tmp$ok
+  ) %>%
+  ungroup() %>%
+  select(-tmp)
+
+# -------------------------
+# 5) Guardar
+# -------------------------
+write_tsv(res, out_tsv)
+
+close(fa)
+
+message("OK -> ", out_tsv, " (", nrow(res), " filas)")
+
+```
+
+# assign SNPs to disseases
+
+```{r}
+library(gwasrapidd)
+library(dplyr)
+
+
+
+rsid <- "rs4245739"
+
+# 0) comprobar si el SNP existe en el catálogo (a veces no está mapeado o no hay entrada)
+exists_variant(rsid)
+
+# 1) sacar asociaciones (si las hay)
+a <- get_associations(variant_id = rsid)
+
+assoc <- a@associations %>%
+  as_tibble() %>%
+  select(associationId, variantId, trait, pvalue, pvalueExponent, pvalueMantissa, oddsRatio, beta, ciText)
+
+# 2) (opcional) sacar info de traits en EFO para tener nombre “bonito”
+t <- get_traits(association_id = assoc$associationId)
+traits <- t@traits %>% as_tibble()
+
+# 3) unir
+out_gwas <- assoc %>%
+  left_join(traits, by = c("trait" = "efoId"))
+
+out_gwas
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringr)
+  library(stringi)
+  library(BiocParallel)
+})
+
+# reverse complement para strings cortos
+revcomp_dna <- function(x) {
+  chartr("ACGTNacgtn", "TGCANtgcan", stringi::stri_reverse(x))
+}
+
+# Convierte un 6mer CANNTG -> tipo CAN-CAN (orden ignorado)
+ebox_to_CAN_CAN <- function(sixmer) {
+  sixmer <- toupper(sixmer)
+
+  hemi1 <- substr(sixmer, 1, 3)          # CA N1
+  right3 <- substr(sixmer, 4, 6)         # N2 T G
+  hemi2 <- revcomp_dna(right3)           # -> CA N2'  (un CAN)
+
+  # orden-agnóstico: CAT-CAG == CAG-CAT
+  paste(sort(c(hemi1, hemi2)), collapse = "-")
+}
+
+# Extrae tipos (puede devolver varios; permite solape)
+extract_ebox_types <- function(seq11) {
+  if (is.na(seq11) || nchar(seq11) < 6) return("")
+
+  # CANNTG correcto, con solape
+  hits <- str_locate_all(seq11, "(?=(CA[ACGT][ACGT]TG))")[[1]]
+  if (nrow(hits) == 0) return("")
+
+  starts <- hits[, "start"]
+  motifs <- substr(seq11, starts, starts + 5)
+
+  types <- vapply(motifs, ebox_to_CAN_CAN, character(1))
+  paste(types, collapse = ";")
+}
+
+# Paralelo por chunks (añade dos columnas)
+add_ebox_cols_parallel <- function(out,
+                                   ref_col = "ref_context_pm5",
+                                   alt_col = "alt_context_pm5",
+                                   workers = 6L,
+                                   chunk_size = 200000L) {
+  n <- nrow(out)
+  idx <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
+
+  param <- if (.Platform$OS.type == "unix") {
+    MulticoreParam(workers = workers, progressbar = TRUE)
+  } else {
+    SnowParam(workers = workers, progressbar = TRUE, type = "SOCK")
+  }
+
+  res_list <- bplapply(idx, function(ii) {
+    data.frame(
+      Eboxes_ref = vapply(out[[ref_col]][ii], extract_ebox_types, character(1)),
+      Eboxes_alt = vapply(out[[alt_col]][ii], extract_ebox_types, character(1)),
+      stringsAsFactors = FALSE
+    )
+  }, BPPARAM = param)
+
+  res <- do.call(rbind, res_list)
+  out$Eboxes_ref <- res$Eboxes_ref
+  out$Eboxes_alt <- res$Eboxes_alt
+  out
+}
+
+# USO:
+ out <- add_ebox_cols_parallel(out, workers=6, chunk_size=200000)
+readr::write_tsv(out, "/users/genomics/josema/multiome/variants.context_plusminus5_fast_ebox_type.tsv")
+
+```
+
+# sankey plot
+
+```{r}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(ggalluvial)
+})
+
+# out debe tener columnas: Eboxes_ref, Eboxes_alt
+DT <- as.data.table(out)[, .(Eboxes_ref, Eboxes_alt)]
+
+# Opcional: renombrar vacíos para que sea interpretable
+DT[Eboxes_ref == "", Eboxes_ref := "NO_EBOX"]
+DT[Eboxes_alt == "", Eboxes_alt := "NO_EBOX"]
+
+# Opcional: quitar el flujo masivo NO_EBOX->NO_EBOX (si domina todo)
+DT <- DT[!(Eboxes_ref == "NO_EBOX" & Eboxes_alt == "NO_EBOX")]
+
+# 1) Agregar (esto es lo que lo hace rápido)
+flows <- DT[, .N, by = .(Eboxes_ref, Eboxes_alt)]
+setnames(flows, "N", "n")
+setorder(flows, -n)
+
+# 2) Filtrar para que el plot sea legible (ajusta)
+min_n <- 5000      # mínimo conteo por flujo
+top_flows <- 200   # o top N flujos
+
+flows <- flows[n >= min_n]
+if (nrow(flows) > top_flows) flows <- flows[1:top_flows]
+
+# 3) Alluvial (Sankey en ggplot)
+p <- ggplot(
+  flows,
+  aes(axis1 = Eboxes_ref, axis2 = Eboxes_alt, y = n)
+) +
+  geom_alluvium(aes(fill = Eboxes_ref), width = 1/12, alpha = 0.85) +
+  geom_stratum(width = 1/12, color = "grey30") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("Eboxes_ref", "Eboxes_alt"), expand = c(.05, .05)) +
+  labs(x = NULL, y = "Variant count") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank())
+
+p
+ggsave("/users/genomics/josema/eboxes_sankey_plot.pdf", p, width = 8, height = 5)
+
+
+
+p <- ggplot(
+  flows,
+  aes(axis1 = Eboxes_ref, axis2 = Eboxes_alt, y = n)
+) +
+  geom_alluvium(aes(fill = Eboxes_ref), width = 1/12, alpha = 0.85) +
+  geom_stratum(width = 1/12, color = "grey30") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 3) +
+  scale_x_discrete(limits = c("Eboxes_ref", "Eboxes_alt"), expand = c(.05, .05)) +
+  labs(x = NULL, y = "Variant count") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.major.x = element_blank())
+
+p
+ggsave("/users/genomics/josema/eboxes_sankey_plot.pdf", p, width = 8, height = 5)
+```
+
+calculate distribution of AF
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(readr)
+})
+out <- read_tsv("/users/genomics/josema/multiome/variants.context_plusminus5_fast_ebox_type.tsv", show_col_types = FALSE)
+
+
+# same plot but with log y axis
+ggplot(out %>% filter(ref_matches_fasta==TRUE), aes(x=AF)) +
+  geom_histogram(binwidth = 0.01, fill="steelblue", color="black") +
+  scale_y_log10() +
+  labs(
+    title = "Allele Frequency distribution for variants affecting E-boxes (log scale)",
+    x = "Allele Frequency (AF)",
+    y = "Variant count (log10)"
+  ) +
+  theme_minimal()
+ggsave("/users/genomics/josema/eboxes_AF_distribution.pdf", width = 8, height = 5)
+```
+
+associate variants with disseases
+```{r}
+varians_assotiations<- read_tsv('/projects_ng/tfm_lia/gwas-catalog-download-associations-alt-full.tsv')
+varians_assotiations %>% 
+  filter(
+    `STRONGEST SNP-RISK ALLELE` %in% (
+      out %>%
+        filter(!(Eboxes_ref == "" & Eboxes_alt == "")) %>%
+        filter(ref_matches_fasta == TRUE) %>%
+        mutate(snp = paste0(id, "-", alt)) %>%
+        pull(snp)
+    )
+  ) %>%
+  group_by(`STRONGEST SNP-RISK ALLELE`) %>% 
+  summarise(
+    traits = paste(unique(`DISEASE/TRAIT`), collapse = "; "),
+    n_traits = n_distinct(`DISEASE/TRAIT`),
+    studies= n_distinct(`PUBMEDID`)
+  ) %>%  
+  arrange(desc(n_traits))
+
+
+```
+
+```{r}
+library(gwasrapidd)
+library(dplyr)
+
+
+rsid <- "rs704"
+
+x <- get_associations(variant_id = rsid)
+
+# tabla plana y legible
+gwas_rs704 <- x@associations %>%
+  left_join(x@loci, by = "association_id") %>%
+  mutate(
+    pvalue_real = pvalue_mantissa * 10^pvalue_exponent
+  ) %>%
+  transmute(
+    rsid = "rs704",
+    trait = description,
+    pvalue = pvalue_real,
+    pvalue_mantissa,
+    pvalue_exponent,
+    or_per_copy_number,
+    beta_number
+  ) %>%
+  arrange(pvalue_exponent, pvalue_mantissa)
+
+```
+
+```{r}
+# Join de tu tabla `final` (primates) con humano para añadir hg38_ebox e hg38_id
+# Asume que tienes un fichero output del liftover para hg38 en el mismo formato:
+#   hg38_with_hg38.tsv  (o similar) con columnas: interval_id, ebox, hg38_key, status
+# Si tu fichero humano tiene otro nombre/columnas, ajusta las rutas/cols abajo.
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(stringr)
+})
+
+# -------------------------
+# CONFIG (AJUSTA)
+# -------------------------
+# 1) tabla combinada actual (primates)
+# si `final` ya está en memoria como data.frame/data.table, salta esta lectura.
+# final_path <- "/users/genomics/josema/primates_tree_fasta/bed_with_metadata_hg38_coords/ALL_species_by_hg38key_id_ebox.tsv.gz"
+
+# 2) fichero humano con mapping (del paso de liftover; para hg38 es "already_hg38")
+human_file <- "/users/genomics/josema/primates_tree_fasta/bed_with_metadata_hg38_coords/hg38_with_hg38.tsv"
+
+# -------------------------
+# INPUT
+# -------------------------
+# final <- fread(final_path)
+# Si ya lo tienes en memoria:
+final <- as.data.table(final)
+
+stopifnot("hg38_key" %in% names(final))
+
+hum <- fread(human_file, select = c("hg38_key","interval_id","ebox","status"))
+
+# quedarnos solo con hg38_key válidas (y mapped/already_hg38)
+hum <- hum[!is.na(hg38_key) & hg38_key != ""]
+if ("status" %in% names(hum)) {
+  hum <- hum[status %in% c("mapped","already_hg38")]
+}
+
+# colapsar por hg38_key (por si hay duplicados)
+hum2 <- hum[, .(
+  hg38_id   = paste(unique(interval_id), collapse = ";"),
+  hg38_ebox = paste(unique(ebox), collapse = ";")
+), by = hg38_key]
+
+setkey(hum2, hg38_key)
+setkey(final, hg38_key)
+
+# -------------------------
+# JOIN
+# -------------------------
+
+ final2 <- merge(final, hum2, by="hg38_key", all=TRUE)
+
+# Reorden opcional: mete humano al final
+# (si ya tienes columnas de especies, esto solo añade las de humano)
+# Aquí no reordeno todo, solo aseguro que hg38_id/hg38_ebox existan:
+if (!"hg38_id" %in% names(final2))  final2[, hg38_id := NA_character_]
+if (!"hg38_ebox" %in% names(final2)) final2[, hg38_ebox := NA_character_]
+
+# -------------------------
+# OUTPUT (opcional)
+# -------------------------
+out_path <- "/users/genomics/josema/primates_tree_fasta/bed_with_metadata_hg38_coords/ALL_species_plus_hg38.tsv.gz"
+fwrite(final2, out_path, sep = "\t", na = "NA", compress = "gzip")
+
+out_path
+
+```
+
+
+```{r}
+# Distribución: por cada hg38_key, cuántas especies tienen CAN-NTG (presencia)
+# Usa final2 (hg38_key + columnas <sp>_id / <sp>_ebox)
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(stringr)
+})
+
+# 1) columnas de especies (presencia = tener *_id no vacío)
+id_cols <- grep("_id$", colnames(final2), value = TRUE)
+
+# Si quieres EXCLUIR humano del conteo, descomenta:
+# id_cols <- setdiff(id_cols, "hg38_id")
+
+# 2) contar presencia por hg38_key
+plot_df <- final2 %>%
+  mutate(
+    n_species = rowSums(across(all_of(id_cols), ~ !is.na(.x) & .x != ""))
+  ) %>%
+  count(n_species, name = "n_positions") %>%
+  arrange(n_species)
+
+# 3) plot (barras)
+p <- ggplot(plot_df, aes(x = n_species, y = n_positions)) +
+  geom_col() +
+  labs(
+    x = "Número de especies con CAN-NTG en esa posición hg38",
+    y = "Número de posiciones (hg38_key)",
+    title = "Distribución de conservación de CAN-NTG por posición (hg38_key)"
+  ) +
+  theme_classic()
+
+print(p)
+
+# 4) guardar
+#dir.create("/users/genomics/josema/primates_tree_fasta/plots", showWarnings = FALSE, recursive = TRUE)
+ggsave("/users/genomics/josema/primates_tree_fasta/plots/distribucion_bhlh_por_especie.png", p, width = 7, height = 5, dpi = 300)
+
+```
+
+
+```{r}
+# Heatmap presencia/ausencia: filas = hg38_key, columnas = especies
+# Guarda el plot en: /users/genomics/josema/primates_tree_fasta/plots
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringr)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+})
+
+# ----------------------------
+# CONFIG
+# ----------------------------
+plot_dir <- "/users/genomics/josema/primates_tree_fasta/plots"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+# columnas *_id para presencia
+id_cols <- grep("_id$", colnames(final2), value = TRUE)
+
+# orden deseado
+sp_order <- c(
+  "otoGar3","micMur2","tarSyr2","saiBol1","calJac4","rheMac10","macFas5","papHam1",
+  "papAnu4","chlSab2","rhiRox1","nasLar1","nomLeu3","ponAbe3","gorGor6","panPan3","panTro6","hg38"
+)
+
+sp_order_cols <- paste0(sp_order, "_id")
+sp_order_cols <- sp_order_cols[sp_order_cols %in% id_cols]
+id_cols <- sp_order_cols
+
+# limitar tamaño para no matar RAM
+max_rows <- 4000
+set.seed(1)
+
+# ----------------------------
+# construir matriz binaria
+# ----------------------------
+mat_df <- final2 %>%
+  select(hg38_key, all_of(id_cols)) %>%
+  mutate(across(all_of(id_cols), ~ !is.na(.x) & .x != "")) %>%
+  mutate(.sum = rowSums(across(all_of(id_cols)))) %>%
+  filter(.sum > 0 & .sum < length(id_cols)) %>%
+  select(-.sum)
+
+if (nrow(mat_df) > max_rows) {
+  mat_df <- mat_df %>% slice_sample(n = max_rows)
+}
+
+rownames_mat <- mat_df$hg38_key
+mat <- as.matrix(mat_df[, -1, drop = FALSE])
+rownames(mat) <- rownames_mat
+colnames(mat) <- sub("_id$", "", colnames(mat))
+
+# ----------------------------
+# Heatmap
+# ----------------------------
+ht <- Heatmap(
+  mat,
+  name = "Presence",
+  col = c("FALSE" = "#E6E6E6", "TRUE" = "#000000"),
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  show_column_names = TRUE,
+  column_names_rot = 45,
+  row_title = paste0("hg38 positions (", nrow(mat), " sampled)"),
+  column_title = "Species",
+  heatmap_legend_param = list(
+    at = c(FALSE, TRUE),
+    labels = c("absent", "present")
+  )
+)
+
+# ----------------------------
+# Guardar
+# ----------------------------
+pdf(file = file.path(plot_dir, "heatmap_presence_absence_bhlh.png"),
+  width = 10,
+  height = 10,
+)
+draw(ht, heatmap_legend_side = "right")
+dev.off()
+
+
+
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+})
+
+plot_dir <- "/users/genomics/josema/primates_tree_fasta/plots"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+# columnas *_id
+id_cols <- grep("_id$", colnames(final2), value = TRUE)
+
+# orden deseado
+sp_order <- c(
+  "otoGar3","micMur2","tarSyr2","saiBol1","calJac4","rheMac10","macFas5","papHam1",
+  "papAnu4","chlSab2","rhiRox1","nasLar1","nomLeu3","ponAbe3","gorGor6","panPan3","panTro6","hg38"
+)
+
+sp_order_cols <- paste0(sp_order, "_id")
+sp_order_cols <- sp_order_cols[sp_order_cols %in% id_cols]
+id_cols <- sp_order_cols
+
+# matriz completa (SIN FILTRO)
+mat <- final2 %>%
+  select(all_of(id_cols)) %>%
+  mutate(across(everything(), ~ !is.na(.x) & .x != "")) %>%
+  as.matrix()
+
+colnames(mat) <- sub("_id$", "", colnames(mat))
+
+ht <- Heatmap(
+  mat,
+  name = "Presence",
+  col = c("FALSE" = "#E6E6E6", "TRUE" = "#000000"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  use_raster = TRUE,              # 🔥 clave para millones
+  raster_quality = 2,
+  column_names_rot = 45,
+  column_title = paste0(nrow(mat), " hg38 positions")
+)
+
+pdf(
+  file = file.path(plot_dir, "heatmap_presence_absence_1M.pdf"),
+  width = 24,
+  height = 24,
+)
+
+draw(ht)
+dev.off()
+
+message("Heatmap guardado en plots/")
+
+```
+
+
+```{r}
+# Plot: en qué especies caen las posiciones hg38 donde el CAN-NTG aparece en 1 sola especie
+# Usa final2 (hg38_key + columnas <sp>_id)
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(ggplot2)
+})
+
+plot_dir <- "/users/genomics/josema/primates_tree_fasta/plots"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+# columnas de presencia
+id_cols <- grep("_id$", colnames(final2), value = TRUE)
+
+# (opcional) orden deseado
+sp_order <- c(
+  "otoGar3","micMur2","tarSyr2","saiBol1","calJac4","rheMac10","macFas5","papHam1",
+  "papAnu4","chlSab2","rhiRox1","nasLar1","nomLeu3","ponAbe3","gorGor6","panPan3","panTro6","hg38"
+)
+sp_order_cols <- paste0(sp_order, "_id")
+id_cols <- sp_order_cols[sp_order_cols %in% id_cols]
+
+# 1) calcula nº de especies presentes por posición
+tmp <- final2 %>%
+  transmute(
+    hg38_key,
+    n_species = rowSums(across(all_of(id_cols), ~ !is.na(.x) & .x != ""))
+  ) %>%
+  bind_cols(final2 %>% select(all_of(id_cols))) %>%
+  filter(n_species == 1)
+
+# 2) cuenta en qué especie está la única presencia
+counts <- tmp %>%
+  pivot_longer(cols = all_of(id_cols), names_to = "species_col", values_to = "val") %>%
+  filter(!is.na(val) & val != "") %>%
+  mutate(species = sub("_id$", "", species_col)) %>%
+  count(species, name = "n_positions") %>%
+  mutate(species = factor(species, levels = sp_order))
+
+# 3) plot
+p <- ggplot(counts, aes(x = species, y = n_positions)) +
+  geom_col() +
+  labs(
+    x = "Especie",
+    y = "Número de posiciones hg38 con CAN-NTG exclusivo de esa especie",
+    title = "Distribución de eboxes presentes en una sola especie"
+  ) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p)
+
+# guardar
+ggsave(
+  filename = file.path(plot_dir, "ebxes_exclusivas_por_especie.png"),
+  plot = p,
+  width = 9,
+  height = 5,
+  dpi = 300
+)
+
+```
+
+# leer regioens accesibles por chipseq
+
+```{r}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(GenomicRanges)
+  library(IRanges)
+})
+
+# -------------------------
+# INPUTS
+# -------------------------
+# final2: data.table/data.frame en memoria con columna hg38_key
+# bed con: chr start end TF tissue
+summits_bed <- "/projects_ng/xabier/bhlh_merged_summits_metadata.bed"
+
+final2 <- as.data.table(final2)
+stopifnot("hg38_key" %in% names(final2))
+
+# -------------------------
+# 1) hg38_key -> GRanges
+# hg38_key formato: chr10:100000055:100000058  (start0:end0)
+# -------------------------
+parts <- tstrsplit(final2$hg38_key, ":", fixed = TRUE)
+chr   <- parts[[1]]
+start0 <- suppressWarnings(as.integer(parts[[2]]))
+end0   <- suppressWarnings(as.integer(parts[[3]]))
+
+valid <- !is.na(chr) & !is.na(start0) & !is.na(end0) & chr != "" & end0 >= start0
+
+gr_q <- GRanges(
+  seqnames = chr[valid],
+  ranges   = IRanges(start = start0[valid] + 1L, end = end0[valid])  # BED0 -> 1-based
+)
+mcols(gr_q)$row_i <- which(valid)
+mcols(gr_q)$hg38_key <- final2$hg38_key[valid]
+
+# -------------------------
+# 2) leer summits BED -> GRanges
+# -------------------------
+bed <- fread(summits_bed, header = FALSE)
+stopifnot(ncol(bed) >= 3)
+setnames(bed, 1:5, c("chr","start0","end0","TF","tissue"))
+
+bed[, start0 := as.integer(start0)]
+bed[, end0   := as.integer(end0)]
+
+gr_s <- GRanges(
+  seqnames = bed$chr,
+  ranges   = IRanges(start = bed$start0 + 1L, end = bed$end0)
+)
+mcols(gr_s)$TF <- bed$TF
+mcols(gr_s)$tissue <- bed$tissue
+
+# -------------------------
+# 3) overlaps
+# -------------------------
+hits <- findOverlaps(gr_q, gr_s, ignore.strand = TRUE)
+
+# marca presencia
+final2[, summit_intersect := FALSE]
+final2[mcols(gr_q)$row_i[queryHits(hits)], summit_intersect := TRUE]
+
+# -------------------------
+# 4) (opcional) agregar TFs/tissues por hg38_key
+# -------------------------
+# Si NO quieres estas columnas, borra este bloque.
+if (length(hits) > 0) {
+  dt_hits <- data.table(
+    row_i = mcols(gr_q)$row_i[queryHits(hits)],
+    TF = mcols(gr_s)$TF[subjectHits(hits)],
+    tissue = mcols(gr_s)$tissue[subjectHits(hits)]
+  )
+
+  agg <- dt_hits[, .(
+    summit_TFs = paste(unique(TF), collapse = ";"),
+    summit_tissues = paste(unique(tissue), collapse = ";")
+  ), by = row_i]
+
+  final2[agg, `:=`(
+    summit_TFs = i.summit_TFs,
+    summit_tissues = i.summit_tissues
+  ), on = .(row_i = row_i)]
+}
+
+# final2 ya tiene summit_intersect (+ opcional columnas TF/tissue)
+
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringr)
+  library(ggplot2)
+})
+
+plot_dir <- "/users/genomics/josema/primates_tree_fasta/plots"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Filtrar solo las que intersectan
+df_int <- final2 %>%
+  filter(summit_intersect == TRUE)
+
+# Columnas de presencia
+id_cols <- grep("_id$", colnames(df_int), value = TRUE)
+
+# ============================================================
+# 1) Qué tipos de eboxes son (en humano)
+# ============================================================
+
+ebox_counts <- df_int %>%
+  filter(!is.na(hg38_ebox) & hg38_ebox != "") %>%
+  count(hg38_ebox, sort = TRUE)
+
+p1 <- ggplot(ebox_counts, aes(x = reorder(hg38_ebox, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  theme_classic() +
+  labs(
+    x = "Tipo de ebox (humano)",
+    y = "Número de posiciones",
+    title = "Tipos de eboxes en regiones con binding (summit_intersect)"
+  )
+
+ggsave(
+  file.path(plot_dir, "summit_intersect_ebox_types.png"),
+  p1, width = 7, height = 5, dpi = 300
+)
+
+# ============================================================
+# 2) Distribución cromosómica en humano
+# ============================================================
+
+chr_vec <- str_split_fixed(df_int$hg38_key, ":", 3)[,1]
+
+chr_counts <- data.frame(chr = chr_vec) %>%
+  count(chr, sort = TRUE)
+
+p2 <- ggplot(chr_counts, aes(x = reorder(chr, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  theme_classic() +
+  labs(
+    x = "Cromosoma",
+    y = "Número de eboxes",
+    title = "Distribución cromosómica (hg38)"
+  )
+
+ggsave(
+  file.path(plot_dir, "summit_intersect_chr_distribution.png"),
+  p2, width = 7, height = 5, dpi = 300
+)
+
+# ============================================================
+# 3) En cuántas especies aparecen
+# ============================================================
+
+species_dist <- df_int %>%
+  mutate(
+    n_species = rowSums(across(all_of(id_cols), ~ !is.na(.x) & .x != ""))
+  ) %>%
+  count(n_species, sort = TRUE)
+
+p3 <- ggplot(species_dist, aes(x = n_species, y = n)) +
+  geom_col() +
+  theme_classic() +
+  labs(
+    x = "Número de especies con CAN-NTG",
+    y = "Número de posiciones",
+    title = "Conservación entre especies (solo posiciones con binding)"
+  )
+
+ggsave(
+  file.path(plot_dir, "summit_intersect_species_distribution.png"),
+  p3, width = 7, height = 5, dpi = 300
+)
+
+message("Plots guardados en: ", plot_dir)
+
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(stringr)
+})
+
+plot_dir <- "/users/genomics/josema/primates_tree_fasta/plots"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ============================================================
+# Preparación común
+# ============================================================
+
+id_cols <- grep("_id$", colnames(final2), value = TRUE)
+
+df <- final2 %>%
+  mutate(
+    accessibility = if_else(summit_intersect, "accessible", "not_accessible"),
+    n_species = rowSums(across(all_of(id_cols), ~ !is.na(.x) & .x != "")),
+    chr = str_split_fixed(hg38_key, ":", 3)[,1]
+  )
+
+# ============================================================
+# 1) EBOX TYPES STACKED
+# ============================================================
+
+topN <- 25
+top_levels <- df %>%
+  filter(!is.na(hg38_ebox) & hg38_ebox != "") %>%
+  count(hg38_ebox, sort = TRUE) %>%
+  slice_head(n = topN) %>%
+  pull(hg38_ebox)
+
+df_ebox <- df %>%
+  filter(hg38_ebox %in% top_levels)
+
+p1 <- df_ebox %>%
+  count(hg38_ebox, accessibility) %>%
+  ggplot(aes(x = reorder(hg38_ebox, n), y = n, fill = accessibility)) +
+  geom_col() +
+  coord_flip() +
+  theme_classic() +
+  labs(
+    x = "E-box type (hg38)",
+    y = "Número de posiciones",
+    title = "E-box types: accessible vs not accessible"
+  )
+
+ggsave(
+  file.path(plot_dir, "ebox_types_accessible_stacked.png"),
+  p1, width = 8, height = 6, dpi = 300
+)
+
+# ============================================================
+# 2) DISTRIBUCIÓN CROMOSÓMICA LIMPIA STACKED
+# ============================================================
+
+canonical <- c(paste0("chr", 1:22), "chrX", "chrY", "chrM", "chrMT")
+
+df_chr <- df %>%
+  mutate(chr_clean = if_else(chr %in% canonical, chr, "noncanonical"))
+
+chr_levels <- c(paste0("chr", 1:22), "chrX", "chrY", "chrM", "chrMT", "noncanonical")
+df_chr$chr_clean <- factor(df_chr$chr_clean, levels = chr_levels)
+
+p2 <- df_chr %>%
+  count(chr_clean, accessibility) %>%
+  ggplot(aes(x = chr_clean, y = n, fill = accessibility)) +
+  geom_col() +
+  theme_classic() +
+  labs(
+    x = "Chromosome",
+    y = "Número de posiciones",
+    title = "Chromosome distribution (canonical only)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(
+  file.path(plot_dir, "chr_distribution_clean_accessible_stacked.png"),
+  p2, width = 10, height = 5, dpi = 300
+)
+
+# ============================================================
+# 3) CONSERVACIÓN (n_species) STACKED
+# ============================================================
+
+p3 <- df %>%
+  count(n_species, accessibility) %>%
+  ggplot(aes(x = n_species, y = n, fill = accessibility)) +
+  geom_col() +
+  theme_classic() +
+  labs(
+    x = "Número de especies con CAN-NTG",
+    y = "Número de posiciones",
+    title = "Conservation across species (stacked)"
+  )
+
+ggsave(
+  file.path(plot_dir, "n_species_distribution_accessible_stacked.png"),
+  p3, width = 8, height = 5, dpi = 300
+)
+
+p1
+p2
+p3
+
+```
+

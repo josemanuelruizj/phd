@@ -1,0 +1,1515 @@
+---
+title: "descriptive_analysis_eboxes_primates"
+author: "Josema"
+date: "2026-02-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringr)
+  library(readr)
+  library(purrr)
+  library(stringi)
+})
+```
+
+
+```{r setup, include=FALSE}
+# =========================
+# CONFIG
+# =========================
+in_dir  <- "~/primates_tree_fasta/fuzznuc"                  # carpeta donde están los .txt
+pattern <- "_fuzznuc_eboxes\\.txt$"   # patrón de nombres
+out_tsv <- file.path(in_dir, "bhlh_sites_all_with_ebox.tsv")
+```
+
+
+```{r setup, include=FALSE}
+files <- list.files(in_dir, pattern = pattern, full.names = TRUE)
+stopifnot(length(files) > 0)
+
+cat("FILES FOUND:", length(files), "\n")
+cat("EXAMPLE:", basename(files[1]), "\n\n")
+```
+
+
+```{r setup, include=FALSE}
+# =========================
+# 1) HELPERS
+# =========================
+suppressPackageStartupMessages({
+  library(stringr)
+  library(stringi)
+})
+
+revcomp_dna <- function(x) {
+  chartr("ACGTNacgtn", "TGCANtgcan", stringi::stri_reverse(x))
+}
+
+# Correct bHLH halfsite representation: CAN-CAN
+canon_bhlh_halfsites <- function(sixmer) {
+  if (is.na(sixmer)) return(NA_character_)
+  s <- toupper(sixmer)
+
+  if (nchar(s) != 6L) return(NA_character_)
+  if (!str_detect(s, "^[ACGT]{6}$")) return(NA_character_)
+
+  left  <- substr(s, 1, 3)               # CAN
+  right <- substr(s, 4, 6)               # NTG
+  right_can <- revcomp_dna(right)        # -> CAN
+
+  # sanity: both should be CAN
+  if (!str_detect(left,  "^CA[ACGT]$")) return(NA_character_)
+  if (!str_detect(right_can, "^CA[ACGT]$")) return(NA_character_)
+
+  # order-invariant: CAA-CAG == CAG-CAA
+  paste(sort(c(left, right_can)), collapse = "-")
+}
+
+# quick check
+canon_bhlh_halfsites("CAAATG")  
+canon_bhlh_halfsites("CATTTG") 
+
+
+get_species_from_file <- function(path) {
+  bn <- basename(path)
+  bn <- str_replace(bn, pattern, "")
+  bn <- str_replace(bn, "_fuzznuc_eboxes$", "")
+  bn <- str_replace(bn, "_fuzznuc_eboxes\\.txt$", "")
+  bn <- str_replace(bn, "_fuzznuc_eboxes", "")
+  bn
+}
+```
+
+
+```{r setup, include=FALSE}
+# =========================
+# 2) PRECOMPUTE: mapa 6-mer -> ebox (RÁPIDO)
+# =========================
+cat("STEP 2/6: building CANNTG -> ebox map (16 entries)...\n")
+
+bases <- c("A","C","G","T")
+
+# genera solo CANNTG
+all6 <- expand.grid(N1 = bases, N2 = bases) |>
+  transmute(motif = paste0("CA", N1, N2, "TG")) |>
+  pull(motif)
+
+ebox_map <- setNames(
+  vapply(all6, canon_bhlh_halfsites, character(1)),
+  all6
+)
+
+print(ebox_map)
+cat("...done.\n\n")
+
+```
+
+
+```{r setup, include=FALSE}
+# =========================
+# 3) FUNCIÓN: CARGAR 1 FICHERO (solo lectura)
+# =========================
+read_one_raw <- function(path) {
+  readr::read_tsv(
+    path,
+    col_types = cols(.default = col_character()),
+    progress = FALSE
+  )
+}
+
+# =========================
+# 4) FUNCIÓN: LIMPIAR + MODIFICAR (sin ebox aún)
+# =========================
+clean_one <- function(df, species) {
+  df %>%
+    filter(SeqName != "SeqName") %>%        # quita headers colados
+    mutate(
+      species = species,
+      Start   = suppressWarnings(as.integer(Start)),
+      End     = suppressWarnings(as.integer(End)),
+      Score   = suppressWarnings(as.numeric(Score)),
+      Strand  = as.character(Strand),
+      Pattern = as.character(Pattern),
+      # quita "patternX:" delante
+      motif6  = toupper(str_replace(Pattern, "^.*?:", ""))
+    )
+}
+
+# =========================
+# 5) FUNCIÓN: AÑADIR EBOX (lookup rápido)
+# =========================
+add_ebox <- function(df) {
+  df %>%
+    mutate(
+      ebox = unname(ebox_map[motif6])
+    )
+}
+```
+
+
+```{r setup, include=FALSE}
+# =========================
+# 6) PIPELINE PASO A PASO CON FEEDBACK
+# =========================
+cat("STEP 3/6: reading files...\n")
+raw_list <- vector("list", length(files))
+names(raw_list) <- basename(files)
+
+for (i in seq_along(files)) {
+  f <- files[i]
+  cat(sprintf("  [%d/%d] read %s ... ", i, length(files), basename(f)))
+  raw_list[[i]] <- read_one_raw(f)
+  cat("OK\n")
+}
+cat("\n")
+
+cat("STEP 4/6: cleaning + extracting motif6...\n")
+clean_list <- vector("list", length(files))
+names(clean_list) <- basename(files)
+
+for (i in seq_along(files)) {
+  f <- files[i]
+  sp <- get_species_from_file(f)
+  cat(sprintf("  [%d/%d] clean %s (species=%s) ... ", i, length(files), basename(f), sp))
+  clean_list[[i]] <- clean_one(raw_list[[i]], sp)
+  cat("OK\n")
+}
+cat("\n")
+
+cat("STEP 5/6: adding ebox column (fast lookup)...\n")
+ebox_list <- vector("list", length(files))
+names(ebox_list) <- basename(files)
+
+for (i in seq_along(files)) {
+  cat(sprintf("  [%d/%d] ebox %s ... ", i, length(files), names(clean_list)[i]))
+  ebox_list[[i]] <- add_ebox(clean_list[[i]])
+  cat("OK\n")
+}
+cat("\n")
+
+write_rds(ebox_list, file.path(in_dir, "intermediate_ebox_list.rds"))
+
+cat("STEP 6/6: binding all results + saving...\n")
+all_bhlh <- bind_rows(ebox_list) %>%
+  select(species, SeqName, Start, End, Score, Strand, Pattern, motif6, ebox, Mismatch)
+
+readr::write_tsv(all_bhlh, out_tsv)
+cat("SAVED -> ", out_tsv, "\n\n")
+
+# mini resumen descriptivo
+cat("SUMMARY: total rows =", nrow(all_bhlh), "\n")
+print(all_bhlh %>% count(species, sort = TRUE) %>% head(10))
+cat("\nTop eboxes overall:\n")
+print(all_bhlh %>% count(species,ebox, sort = TRUE) %>%  pivot_wider(names_from = ebox, values_from = n), width=Inf, height=Inf)
+write_csv(x = all_bhlh %>% count(species,ebox, sort = TRUE) %>%  pivot_wider(names_from = ebox, values_from = n), file = file.path(in_dir, "species_ebox_counts_wide.csv"))
+
+```
+
+
+
+# Funcions para hacer el liftover
+
+```{r}
+# ============================================================
+# Liftover de una tabla multi-especie (species + coords) a hg38
+# usando chains por especie: <species>ToHg38.over.chain(.gz)
+# ============================================================
+
+liftover_multispecies_to_hg38 <- function(df,
+                                         chain_dir,
+                                         species_col = "species",
+                                         seq_col     = "SeqName",
+                                         start_col   = "Start",
+                                         end_col     = "End",
+                                         strand_col  = "Strand",
+                                         chain_suffix = "ToHg38.over.chain",
+                                         allow_gz = TRUE,
+                                         keep_cols = NULL,
+                                         start_is_0_based = FALSE,
+                                         split_size = 200000L) {
+
+  stopifnot(requireNamespace("dplyr", quietly = TRUE))
+  stopifnot(requireNamespace("rtracklayer", quietly = TRUE))
+  stopifnot(requireNamespace("GenomicRanges", quietly = TRUE))
+  stopifnot(requireNamespace("IRanges", quietly = TRUE))
+  stopifnot(requireNamespace("S4Vectors", quietly = TRUE))
+
+  df <- as.data.frame(df)
+
+  # cols mínimas
+  need <- unique(c(species_col, seq_col, start_col, end_col, strand_col))
+  miss <- setdiff(need, colnames(df))
+  if (length(miss) > 0) stop("Missing columns in df: ", paste(miss, collapse = ", "))
+
+  # opcional: mantener solo ciertas cols
+  if (!is.null(keep_cols)) {
+    need2 <- unique(c(need, keep_cols))
+    df <- df[, intersect(need2, colnames(df)), drop = FALSE]
+  }
+
+  # id estable para merge
+  df_id <- df |>
+    dplyr::mutate(row_id = dplyr::row_number())
+
+  # tipos numéricos
+  df_id[[start_col]] <- suppressWarnings(as.integer(df_id[[start_col]]))
+  df_id[[end_col]]   <- suppressWarnings(as.integer(df_id[[end_col]]))
+
+  # si tus coords eran BED (0-based), convertir a 1-based para GRanges
+  if (isTRUE(start_is_0_based)) {
+    df_id[[start_col]] <- df_id[[start_col]] + 1L
+  }
+
+  # filas válidas
+  valid <- df_id |>
+    dplyr::filter(
+      !is.na(.data[[species_col]]),
+      !is.na(.data[[seq_col]]),
+      !is.na(.data[[start_col]]),
+      !is.na(.data[[end_col]]),
+      .data[[start_col]] > 0,
+      .data[[end_col]] > 0,
+      .data[[end_col]] >= .data[[start_col]]
+    )
+
+  df_id <- df_id |>
+    dplyr::mutate(status = dplyr::if_else(row_id %in% valid$row_id, "to_liftover", "bad_input"))
+
+  if (nrow(valid) == 0) {
+    return(df_id |>
+             dplyr::mutate(
+               n_mapped = 0L,
+               hg38_SeqName = NA_character_,
+               hg38_Start = NA_integer_,
+               hg38_End = NA_integer_,
+               hg38_Strand = NA_character_,
+               chain_used = NA_character_
+             ) |>
+             dplyr::select(-row_id))
+  }
+
+  # helper: localizar chain
+  find_chain <- function(genome) {
+    p1 <- file.path(chain_dir, paste0(genome, chain_suffix))
+    p2 <- if (allow_gz) paste0(p1, ".gz") else NA_character_
+    if (file.exists(p1)) return(p1)
+    if (allow_gz && file.exists(p2)) return(p2)
+    NA_character_
+  }
+
+  # helper: liftover por chunk (para no reventar RAM con objetos S4 gigantes)
+  liftover_one_chunk <- function(chunk, ch_path) {
+    ch <- rtracklayer::import.chain(ch_path)
+
+    gr <- GenomicRanges::GRanges(
+      seqnames = chunk[[seq_col]],
+      ranges   = IRanges::IRanges(start = chunk[[start_col]], end = chunk[[end_col]]),
+      strand   = chunk[[strand_col]]
+    )
+    GenomicRanges::mcols(gr)$row_id <- chunk$row_id
+
+    lo <- rtracklayer::liftOver(gr, ch)
+    nmap <- S4Vectors::elementNROWS(lo)
+
+    mapped_idx <- which(nmap > 0)
+    if (length(mapped_idx) == 0) {
+      return(dplyr::tibble(
+        row_id = integer(),
+        n_mapped = integer(),
+        hg38_SeqName = character(),
+        hg38_Start = integer(),
+        hg38_End = integer(),
+        hg38_Strand = character()
+      ))
+    }
+
+    mapped_gr <- unlist(lo[mapped_idx], use.names = FALSE)
+    orig_rep  <- rep(mapped_idx, nmap[mapped_idx])
+
+    GenomicRanges::mcols(mapped_gr)$row_id   <- GenomicRanges::mcols(gr)$row_id[orig_rep]
+    GenomicRanges::mcols(mapped_gr)$n_mapped <- nmap[orig_rep]
+
+    as.data.frame(mapped_gr) |>
+      dplyr::transmute(
+        row_id,
+        n_mapped,
+        hg38_SeqName = as.character(seqnames),
+        hg38_Start   = start,
+        hg38_End     = end,
+        hg38_Strand  = as.character(strand)
+      )
+  }
+
+  # procesar por especie (cada una con su chain)
+  genomes <- sort(unique(valid[[species_col]]))
+
+  mapped_all <- vector("list", length(genomes))
+  names(mapped_all) <- genomes
+
+  for (gi in seq_along(genomes)) {
+    genome <- genomes[gi]
+    ch_path <- find_chain(genome)
+
+    if (is.na(ch_path)) {
+      message(sprintf("[SKIP %d/%d] %s : no chain found", gi, length(genomes), genome))
+      mapped_all[[gi]] <- dplyr::tibble(
+        row_id = integer(),
+        n_mapped = integer(),
+        hg38_SeqName = character(),
+        hg38_Start = integer(),
+        hg38_End = integer(),
+        hg38_Strand = character(),
+        chain_used = character()
+      )
+      next
+    }
+
+    message(sprintf("[LIFT %d/%d] %s : %s", gi, length(genomes), genome, basename(ch_path)))
+
+    sub <- valid |> dplyr::filter(.data[[species_col]] == genome)
+
+    # chunking
+    idx <- seq_len(nrow(sub))
+    chunks <- split(idx, ceiling(idx / split_size))
+
+    out_chunks <- vector("list", length(chunks))
+    for (ci in seq_along(chunks)) {
+      message(sprintf("  - chunk %d/%d (%d rows)", ci, length(chunks), length(chunks[[ci]])))
+      out_chunks[[ci]] <- liftover_one_chunk(sub[chunks[[ci]], , drop = FALSE], ch_path)
+    }
+
+    mapped_all[[gi]] <- dplyr::bind_rows(out_chunks) |>
+      dplyr::mutate(chain_used = basename(ch_path))
+  }
+
+  mapped_df <- dplyr::bind_rows(mapped_all)
+
+  out <- df_id |>
+    dplyr::left_join(mapped_df, by = "row_id") |>
+    dplyr::mutate(
+      n_mapped = dplyr::if_else(is.na(n_mapped), 0L, as.integer(n_mapped)),
+      status = dplyr::case_when(
+        status == "bad_input" ~ "bad_input",
+        n_mapped > 0 ~ "mapped",
+        TRUE ~ "unmapped"
+      )
+    ) |>
+    dplyr::arrange(row_id, dplyr::desc(n_mapped)) |>
+    dplyr::select(-row_id)
+
+  out
+}
+
+```
+
+# Aplicar el liftover
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(stringr)
+})
+
+in_tsv  <- "/users/genomics/josema/primates_tree_fasta/all_bhlh.tsv"
+bed_dir <- "/users/genomics/josema/primates_tree_fasta/bed_by_species"
+dir.create(bed_dir, recursive = TRUE, showWarnings = FALSE)
+
+df <- read_tsv(in_tsv, show_col_types = FALSE)
+
+# añade ID estable global para recuperar luego (no depende de ordenar)
+df <- df %>% mutate(global_id = row_number())
+
+species_vec <- sort(unique(df$species))
+cat("Species:", length(species_vec), "\n")
+
+for (i in seq_along(species_vec)) {
+  sp <- species_vec[i]
+  cat(sprintf("[%d/%d] %s\n", i, length(species_vec), sp))
+
+  sub <- df %>% filter(species == sp)
+
+  out_bed <- file.path(bed_dir, paste0(sp, ".bed"))
+
+  if (sp == "hg38") {
+    # hg38 no necesita liftover: aún así guardamos BED por consistencia (opcional)
+    bed <- sub %>%
+      transmute(
+        chrom = SeqName,
+        chromStart = as.integer(Start) - 1L,
+        chromEnd   = as.integer(End),
+        name = global_id
+      )
+    write_tsv(bed, out_bed, col_names = FALSE)
+    next
+  }
+
+  # BED: 0-based start, end-exclusive
+  bed <- sub %>%
+    transmute(
+      chrom = SeqName,
+      chromStart = as.integer(Start) - 1L,
+      chromEnd   = as.integer(End),
+      name = global_id
+    )
+
+  write_tsv(bed, out_bed, col_names = FALSE)
+}
+
+
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(stringr)
+  library(rtracklayer)
+  library(GenomicRanges)
+  library(IRanges)
+  library(S4Vectors)
+})
+
+# -------------------------
+# CONFIG (AJUSTA)
+# -------------------------
+bed_dir   <- "/users/genomics/josema/primates_tree_fasta/bed_by_species"  # <species>.bed
+chain_dir <- "/users/genomics/josema/primates_tree_fasta/chains"
+base_tsv  <- "/users/genomics/josema/primates_tree_fasta/all_bhlh_with_global_id.tsv" 
+out_dir   <- "/users/genomics/josema/primates_tree_fasta/liftover_tables_by_species"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# columnas esperadas en base_tsv:
+# species SeqName Start End Score Strand Pattern motif6 ebox global_id
+id_col <- "global_id"
+
+# -------------------------
+# helpers
+# -------------------------
+find_chain <- function(sp) {
+  p1 <- file.path(chain_dir, paste0(sp, "ToHg38.over.chain.gz"))
+  p2 <- file.path(chain_dir, paste0(sp, "ToHg38.over.chain"))
+  if (file.exists(p1)) return(p1)
+  if (file.exists(p2)) return(p2)
+  NA_character_
+}
+
+read_bed4 <- function(path) {
+  x <- read_tsv(path, col_names = FALSE, show_col_types = FALSE, progress = FALSE)
+  if (ncol(x) < 4) stop("BED needs >=4 cols: chrom start end name. File: ", path)
+  x <- x[, 1:4]
+  colnames(x) <- c("orig_chr", "orig_start0", "orig_end0", "name")
+  x %>%
+    mutate(
+      orig_start0 = as.integer(orig_start0),
+      orig_end0   = as.integer(orig_end0)
+    )
+}
+
+# BED -> GRanges (R usa 1-based)
+bed_to_gr <- function(bed4) {
+  gr <- GRanges(
+    seqnames = bed4$orig_chr,
+    ranges   = IRanges(start = bed4$orig_start0 + 1L, end = bed4$orig_end0),
+    strand   = "*"
+  )
+  mcols(gr)$name <- bed4$name
+  gr
+}
+
+# liftOver result -> df (con start/end 1-based)
+liftover_to_df <- function(lo) {
+  nmap <- S4Vectors::elementNROWS(lo)
+
+  mapped_idx <- which(nmap > 0)
+  mapped_df <- tibble(
+    name = character(),
+    hg38_chr = character(),
+    hg38_start = integer(),
+    hg38_end = integer()
+  )
+
+  if (length(mapped_idx) > 0) {
+    mapped_gr <- unlist(lo[mapped_idx], use.names = FALSE)
+    orig_rep  <- rep(mapped_idx, nmap[mapped_idx])
+
+    mcols(mapped_gr)$name <- mcols(unlist(lo, use.names = FALSE))$name
+    # la línea de arriba no es fiable; mejor:
+    # propagamos name desde el GR original afuera (lo hacemos en main con gr$name)
+
+    mapped_df <- as.data.frame(mapped_gr) %>%
+      transmute(
+        hg38_chr = as.character(seqnames),
+        hg38_start = start,
+        hg38_end   = end
+      )
+
+    # name lo añadimos fuera con orig_rep usando el gr original
+    mapped_df$orig_rep <- orig_rep
+  }
+
+  list(nmap = nmap, mapped_df = mapped_df)
+}
+
+# -------------------------
+# MAIN
+# -------------------------
+base <- read_tsv(base_tsv, show_col_types = FALSE)
+stopifnot(all(c("species","motif6","ebox", id_col) %in% colnames(base)))
+
+# diccionario id -> motif6/ebox (para join rápido)
+base_small <- base %>%
+  select(species, !!sym(id_col), motif6, ebox)
+
+beds <- list.files(bed_dir, pattern = "\\.bed$", full.names = TRUE)
+stopifnot(length(beds) > 0)
+
+for (i in seq_along(beds)) {
+  bed_path <- beds[i]
+  sp <- tools::file_path_sans_ext(basename(bed_path))
+  message(sprintf("[%d/%d] %s", i, length(beds), sp))
+
+  out_file <- file.path(out_dir, paste0(sp, "_liftoverToHg38.tsv"))
+
+  bed4 <- read_bed4(bed_path) %>%
+    mutate(species = sp)
+
+  # une motif6/ebox desde la tabla base usando el ID
+  # (si name en BED es numérico, lo igualamos al tipo del id_col)
+  # intentamos convertir ambos a character para evitar líos
+  bed4 <- bed4 %>% mutate(name = as.character(name))
+  base_join <- base_small %>%
+    filter(species == sp) %>%
+    mutate(!!id_col := as.character(.data[[id_col]]))
+
+  bed4 <- bed4 %>%
+    left_join(base_join, by = setNames(id_col, "name"))
+
+  # coords originales también en 1-based (por comodidad)
+  bed4 <- bed4 %>%
+    mutate(
+      orig_start = orig_start0 + 1L,
+      orig_end   = orig_end0
+    )
+
+  # hg38: no liftover
+  if (sp == "hg38") {
+    out <- bed4 %>%
+      transmute(
+        species,
+        orig_chr, orig_start, orig_end,
+        hg38_chr   = orig_chr,
+        hg38_start = orig_start,
+        hg38_end   = orig_end,
+        motif6, ebox,
+        n_mapped = 1L,
+        status = "already_hg38"
+      )
+    write_tsv(out, out_file)
+    next
+  }
+
+  chain_path <- find_chain(sp)
+  if (is.na(chain_path)) {
+    out <- bed4 %>%
+      transmute(
+        species,
+        orig_chr, orig_start, orig_end,
+        hg38_chr = NA_character_,
+        hg38_start = NA_integer_,
+        hg38_end = NA_integer_,
+        motif6, ebox,
+        n_mapped = 0L,
+        status = "no_chain"
+      )
+    write_tsv(out, out_file)
+    next
+  }
+
+  # liftover
+  gr <- bed_to_gr(bed4)
+  ch <- rtracklayer::import.chain(chain_path)
+  lo <- rtracklayer::liftOver(gr, ch)
+  nmap <- S4Vectors::elementNROWS(lo)
+
+  # mapped rows (replica si multimap)
+  mapped_idx <- which(nmap > 0)
+  mapped_out <- tibble()
+
+  if (length(mapped_idx) > 0) {
+    mapped_gr <- unlist(lo[mapped_idx], use.names = FALSE)
+    orig_rep  <- rep(mapped_idx, nmap[mapped_idx])
+
+    # propaga el name del input
+    mcols(mapped_gr)$name <- mcols(gr)$name[orig_rep]
+
+    mapped_out <- as.data.frame(mapped_gr) %>%
+      transmute(
+        name = as.character(name),
+        hg38_chr = as.character(seqnames),
+        hg38_start = start,
+        hg38_end   = end
+      )
+  }
+
+  # n_mapped por input (name)
+  nm_df <- tibble(name = as.character(mcols(gr)$name), n_mapped = as.integer(nmap))
+
+  out <- bed4 %>%
+    mutate(name = as.character(name)) %>%
+    left_join(nm_df, by = "name") %>%
+    left_join(mapped_out, by = "name") %>%
+    mutate(
+      n_mapped = if_else(is.na(n_mapped), 0L, n_mapped),
+      status = case_when(
+        n_mapped > 0 ~ "mapped",
+        TRUE ~ "unmapped"
+      )
+    ) %>%
+    transmute(
+      species,
+      orig_chr, orig_start, orig_end,
+      hg38_chr, hg38_start, hg38_end,
+      motif6, ebox,
+      n_mapped, status
+    )
+
+  write_tsv(out, out_file)
+  message("  -> saved: ", out_file)
+}
+
+message("DONE -> ", out_dir)
+
+
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(stringr)
+})
+
+# -------------------------
+# CONFIG (AJUSTA)
+# -------------------------
+in_tsv  <- "/users/genomics/josema/primates_tree_fasta/all_bhlh.tsv"  # tu tabla original
+bed_dir <- "/users/genomics/josema/primates_tree_fasta/bed_with_motif_by_species"
+dir.create(bed_dir, recursive = TRUE, showWarnings = FALSE)
+
+# columnas esperadas en in_tsv:
+# species SeqName Start End Score Strand Pattern motif6 ebox
+
+# -------------------------
+# MAIN
+# -------------------------
+df <- read_tsv(in_tsv, show_col_types = FALSE)
+
+
+need <- c("species","SeqName","Start","End","motif6","ebox")
+miss <- setdiff(need, colnames(df))
+if (length(miss) > 0) stop("Missing columns: ", paste(miss, collapse=", "))
+
+species_vec <- sort(unique(df$species))
+
+cat("Creating BEDs for", length(species_vec), "species\n\n")
+
+for (i in seq_along(species_vec)) {
+
+  sp <- species_vec[i]
+  cat(sprintf("[%d/%d] %s\n", i, length(species_vec), sp))
+
+  sub <- df %>%
+    filter(species == sp) %>%
+    mutate(
+      Start = as.integer(Start),
+      End   = as.integer(End)
+    ) %>%
+    filter(!is.na(Start), !is.na(End), Start > 0, End >= Start)
+
+  # BED6 + ebox (extra col)
+  bed <- sub %>%
+    transmute(
+      chrom  = SeqName,
+      start0 = Start - 1L,      # BED 0-based
+      end0   = End,
+      name   = motif6,         # secuencia real
+      score  = 0,              # requerido por BED6
+      strand = if ("Strand" %in% names(sub)) Strand else "*",
+      ebox   = ebox            # tipo CAN-CAN
+    )
+
+  out_file <- file.path(out_dir, paste0(sp, "_eboxes.bed"))
+
+  write_tsv(bed, out_file, col_names = FALSE)
+
+  cat("  -> rows:", nrow(bed), "\n")
+}
+
+cat("\nDONE ->", out_dir, "\n")
+
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(stringr)
+  library(rtracklayer)
+  library(GenomicRanges)
+  library(IRanges)
+  library(S4Vectors)
+})
+
+# -------------------------
+# CONFIG (AJUSTA)
+# -------------------------
+bed_dir   <- "/users/genomics/josema/primates_tree_fasta/bed_with_motif_by_species"  # *.bed (7 cols)
+chain_dir <- "/users/genomics/josema/primates_tree_fasta/chains"
+out_dir   <- "/users/genomics/josema/primates_tree_fasta/bed_with_metadata_hg38_coords"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Si algún día quieres limitar tamaño de chunk por RAM:
+chunk_size <- 2500000L
+
+# -------------------------
+# helpers
+# -------------------------
+find_chain <- function(sp) {
+  p1 <- file.path(chain_dir, paste0(sp, "ToHg38.over.chain.gz"))
+  p2 <- file.path(chain_dir, paste0(sp, "ToHg38.over.chain"))
+  if (file.exists(p1)) return(p1)
+  if (file.exists(p2)) return(p2)
+  NA_character_
+}
+
+read_bed7 <- function(path) {
+  x <- read_tsv(path, col_names = FALSE, show_col_types = FALSE, progress = FALSE)
+  if (ncol(x) < 7) stop("Expected >=7 cols (chrom start0 end0 motif6 score strand ebox). File: ", path)
+  x <- x[, 1:7]
+  colnames(x) <- c("chrom","start0","end0","motif6","score","strand","ebox")
+  x %>%
+    mutate(
+      start0 = as.integer(start0),
+      end0   = as.integer(end0),
+      motif6 = as.character(motif6),
+      score  = suppressWarnings(as.integer(score)),
+      strand = as.character(strand),
+      ebox   = as.character(ebox)
+    )
+}
+
+bed7_to_gr <- function(tbl) {
+  # BED: start0 0-based, end0 end-exclusive
+  # GRanges: start 1-based inclusive, end 1-based inclusive
+  GRanges(
+    seqnames = tbl$chrom,
+    ranges   = IRanges(start = tbl$start0 + 1L, end = tbl$end0),
+    strand   = tbl$strand
+  )
+}
+
+# -------------------------
+# MAIN
+# -------------------------
+bed_files <- list.files(bed_dir, pattern = "\\.bed$", full.names = TRUE)
+stopifnot(length(bed_files) > 0)
+
+for (i in seq_along(bed_files)) {
+  f <- bed_files[i]
+  sp <- sub("_eboxes\\.bed$|\\.bed$", "", basename(f))  # soporta calJac4_eboxes.bed o calJac4.bed
+  message(sprintf("\n[%d/%d] %s", i, length(bed_files), sp))
+
+  out_file <- file.path(out_dir, paste0(sp, "_with_hg38.tsv"))
+
+  bed <- read_bed7(f) %>%
+    mutate(
+      species = sp,
+      interval_id = paste0(sp, ":", chrom, ":", start0, "-", end0, ":", strand, ":", row_number())
+    ) %>%
+    filter(!is.na(chrom), !is.na(start0), !is.na(end0), start0 >= 0, end0 >= start0)
+
+  # hg38: no liftover, copiar coords
+  if (sp == "hg38") {
+    out <- bed %>%
+      transmute(
+        species, interval_id,
+        chrom, start0, end0, motif6, score, strand, ebox,
+        hg38_chr    = chrom,
+        hg38_start0 = start0,
+        hg38_end0   = end0,
+        hg38_key    = paste(hg38_chr, hg38_start0, hg38_end0, sep=":"),
+        status      = "already_hg38",
+        n_mapped    = 1L,
+        chain_used  = NA_character_
+      )
+    write_tsv(out, out_file)
+    message("  -> saved (already hg38): ", out_file)
+    next
+  }
+
+  chain_path <- find_chain(sp)
+  if (is.na(chain_path)) {
+    out <- bed %>%
+      transmute(
+        species, interval_id,
+        chrom, start0, end0, motif6, score, strand, ebox,
+        hg38_chr    = NA_character_,
+        hg38_start0 = NA_integer_,
+        hg38_end0   = NA_integer_,
+        hg38_key    = NA_character_,
+        status      = "no_chain",
+        n_mapped    = 0L,
+        chain_used  = NA_character_
+      )
+    write_tsv(out, out_file)
+    message("  -> saved (no chain): ", out_file)
+    next
+  }
+
+  # importar chain una vez
+  ch <- rtracklayer::import.chain(chain_path)
+
+  idx <- seq_len(nrow(bed))
+  chunks <- split(idx, ceiling(idx / chunk_size))
+
+  mapped_rows <- vector("list", length(chunks))
+
+  for (ci in seq_along(chunks)) {
+    message(sprintf("  - chunk %d/%d (%d rows)", ci, length(chunks), length(chunks[[ci]])))
+
+    bsub <- bed[chunks[[ci]], , drop = FALSE]
+    gr <- bed7_to_gr(bsub)
+
+    # pega metadata para que sobreviva al unlist del liftOver
+    mcols(gr)$species      <- bsub$species
+    mcols(gr)$interval_id  <- bsub$interval_id
+    mcols(gr)$chrom        <- bsub$chrom
+    mcols(gr)$start0       <- bsub$start0
+    mcols(gr)$end0         <- bsub$end0
+    mcols(gr)$motif6       <- bsub$motif6
+    mcols(gr)$score        <- bsub$score
+    mcols(gr)$strand0      <- bsub$strand
+    mcols(gr)$ebox         <- bsub$ebox
+
+    lo <- rtracklayer::liftOver(gr, ch)
+    nmap <- S4Vectors::elementNROWS(lo)
+
+    midx <- which(nmap > 0)
+    if (length(midx) == 0) {
+      mapped_rows[[ci]] <- tibble()
+      next
+    }
+
+    mapped_gr <- unlist(lo[midx], use.names = FALSE)
+
+    mapped_rows[[ci]] <- as.data.frame(mapped_gr) %>%
+      transmute(
+        species     = mcols(mapped_gr)$species,
+        interval_id = mcols(mapped_gr)$interval_id,
+
+        chrom  = mcols(mapped_gr)$chrom,
+        start0 = mcols(mapped_gr)$start0,
+        end0   = mcols(mapped_gr)$end0,
+        motif6 = mcols(mapped_gr)$motif6,
+        score  = mcols(mapped_gr)$score,
+        strand = mcols(mapped_gr)$strand0,
+        ebox   = mcols(mapped_gr)$ebox,
+
+        hg38_chr    = as.character(seqnames(mapped_gr)),
+        hg38_start0 = start(mapped_gr) - 1L,
+        hg38_end0   = end(mapped_gr),
+
+        n_mapped = 1L,                 # cada fila aquí es un mapping válido
+        chain_used = basename(chain_path)
+      )
+  }
+
+  mapped_df <- bind_rows(mapped_rows)
+
+  # UNMAPPED: todas las originales con NA en hg38 y n_mapped=0
+  # (si una original mapea a múltiples sitios, se queda igualmente en mapped_df
+  #  y NO queremos duplicarla como unmapped)
+  mapped_ids <- if (nrow(mapped_df) > 0) unique(mapped_df$interval_id) else character()
+
+  unmapped_df <- bed %>%
+    filter(!(interval_id %in% mapped_ids)) %>%
+    transmute(
+      species, interval_id,
+      chrom, start0, end0, motif6, score, strand, ebox,
+      hg38_chr    = NA_character_,
+      hg38_start0 = NA_integer_,
+      hg38_end0   = NA_integer_,
+      n_mapped    = 0L,
+      chain_used  = basename(chain_path)
+    )
+
+  out <- bind_rows(mapped_df, unmapped_df) %>%
+    mutate(
+      status = if_else(n_mapped > 0, "mapped", "unmapped"),
+      hg38_key = if_else(!is.na(hg38_chr),
+                         paste(hg38_chr, hg38_start0, hg38_end0, sep=":"),
+                         NA_character_)
+    )
+
+  write_tsv(out, out_file)
+
+  summ <- out %>% count(status) %>% arrange(desc(n))
+  message("  -> saved: ", out_file, " | ", paste0(summ$status, "=", summ$n, collapse=" ; "))
+}
+
+message("\nDONE -> ", out_dir)
+
+```
+
+
+
+
+
+full join 
+
+
+
+
+
+```{r}
+# Full-join gigante por hg38_key, optimizado (data.table)
+# Output: una fila por hg38_key
+#         + por especie: <sp>_id y <sp>_ebox
+#
+# Asume que cada fichero por especie tiene al menos:
+#   hg38_key, interval_id, ebox, status
+# (si no tienes status, quita el filtro status == "mapped")
+
+suppressPackageStartupMessages({
+  library(data.table)
+})
+
+# -------------------------
+# CONFIG (AJUSTA)
+# -------------------------
+in_dir  <- "/users/genomics/josema/primates_tree_fasta/bed_with_metadata_hg38_coords"
+out_tsv <- file.path(in_dir, "ALL_species_fulljoin_by_hg38key.tsv.gz")
+
+# Patrón de ficheros (ajusta si tus nombres son distintos)
+files <- list.files(in_dir, pattern = "_with_hg38\\.tsv$", full.names = TRUE)
+stopifnot(length(files) > 0)
+
+# Extraer species del filename: "<species>_with_hg38.tsv"
+get_species <- function(path) sub("_with_hg38\\.tsv$", "", basename(path))
+
+# -------------------------
+# Helper: leer y reducir 1 especie a (hg38_key, sp_id, sp_ebox)
+#         colapsa multi-mapping por hg38_key con ';'
+# -------------------------
+read_one_species_compact <- function(path) {
+  sp <- get_species(path)
+  message("[READ] ", sp, " -> ", basename(path))
+
+  # leer SOLO columnas necesarias (fread es la más rápida)
+  dt <- fread(path, select = c("hg38_key", "interval_id", "ebox", "status"))
+
+  # quedarte solo con mapped y con key válida
+  # (si no tienes status, comenta esa línea)
+  dt <- dt[status == "mapped" & !is.na(hg38_key) & hg38_key != ""]
+
+  # por si hay duplicados exactos
+  dt <- unique(dt, by = c("hg38_key", "interval_id", "ebox"))
+
+  # compacta a una fila por hg38_key en esa especie
+  # (si en un hg38_key hay varias filas, las juntamos)
+  dt_comp <- dt[, .(
+    tmp_id   = paste(unique(interval_id), collapse = ";"),
+    tmp_ebox = paste(unique(ebox), collapse = ";")
+  ), by = hg38_key]
+
+  setnames(dt_comp, c("tmp_id", "tmp_ebox"), c(paste0(sp, "_id"), paste0(sp, "_ebox")))
+  setkey(dt_comp, hg38_key)
+
+  dt_comp
+}
+
+# -------------------------
+# Leer y mergear incrementalmente (full join)
+# -------------------------
+message("Files: ", length(files))
+dts <- vector("list", length(files))
+
+for (i in seq_along(files)) {
+  message(sprintf("[STEP %d/%d] %s", i, length(files), basename(files[i])))
+  dts[[i]] <- read_one_species_compact(files[i])
+
+  # liberar memoria cuanto antes
+  gc()
+}
+
+# Full join por hg38_key
+message("Merging all species tables (full join)...")
+merged <- Reduce(function(x, y) merge(x, y, by = "hg38_key", all = TRUE), dts)
+
+# Ordena por hg38_key (opcional)
+setkey(merged, hg38_key)
+
+# Guardar (gz comprimido)
+message("Writing: ", out_tsv)
+fwrite(merged, out_tsv, sep = "\t", na = "NA", compress = "gzip")
+
+message("DONE: rows=", nrow(merged), " cols=", ncol(merged))
+
+```
+
+# alternativa rapida 
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(stringr)
+  library(tidyverse)
+})
+
+in_dir <- "/users/genomics/josema/primates_tree_fasta/bed_with_metadata_hg38_coords"
+files  <- list.files(in_dir, pattern = "_with_hg38\\.tsv$", full.names = TRUE)
+
+stopifnot(length(files) > 0)
+
+get_sp <- function(f) sub("_with_hg38\\.tsv$", "", basename(f))
+
+# Lee y colapsa 1 especie -> long table: (hg38_key, species, id, ebox)
+read_one_long <- function(f) {
+  sp <- get_sp(f)
+  message("[READ] ", sp)
+
+  dt <- fread(f, select = c("hg38_key", "interval_id", "ebox", "status"))
+
+  # solo mapeados y con key válida
+  dt <- dt[status == "mapped" & !is.na(hg38_key) & hg38_key != ""]
+
+  if (nrow(dt) == 0) {
+    return(data.table(hg38_key=character(), species=character(), id=character(), ebox=character()))
+  }
+
+  # dedup por si hay repetidos exactos
+  dt <- unique(dt, by = c("hg38_key", "interval_id", "ebox"))
+
+  # colapsa a 1 fila por hg38_key (por especie)
+  out <- dt[, .(
+    id   = paste(unique(interval_id), collapse = ";"),
+    ebox = paste(unique(ebox), collapse = ";")
+  ), by = hg38_key]
+
+  out[, species := sp]
+  setcolorder(out, c("hg38_key", "species", "id", "ebox"))
+  out
+}
+
+# 1) construir tabla long (apilada)
+long <- rbindlist(lapply(files, read_one_long), use.names = TRUE, fill = TRUE)
+
+# 2) wide para IDs
+wide_id <- dcast(long, hg38_key ~ species, value.var = "id")
+setnames(wide_id, old = setdiff(names(wide_id), "hg38_key"), new = paste0(setdiff(names(wide_id), "hg38_key"), "_id"))
+
+# 3) wide para eboxes
+wide_ebox <- dcast(long, hg38_key ~ species, value.var = "ebox")
+setnames(wide_ebox, old = setdiff(names(wide_ebox), "hg38_key"), new = paste0(setdiff(names(wide_ebox), "hg38_key"), "_ebox"))
+
+# 4) merge final (solo 1 merge)
+setkey(wide_id, hg38_key)
+setkey(wide_ebox, hg38_key)
+final <- wide_id[wide_ebox]
+
+# guardar
+out_file <- file.path(in_dir, "ALL_species_by_hg38key_id_ebox_optimizado.tsv.gz")
+fwrite(final, out_file, sep = "\t", na = "NA", compress = "gzip")
+message("DONE -> ", out_file, " | rows=", nrow(final), " cols=", ncol(final))
+
+```
+
+
+# COPIAR LOS CAMBIOS!!! "backup_historial.txt"
+
+```{r}
+
+```
+
+
+#ASOCIAR CREs FROM ZOONOMIA
+
+
+```{r}
+andrews_data <- readxl::read_xlsx('/projects_ng/tfm_lia/andrews/Data S1.xlsx')
+```
+
+```{r}
+andrews_data %>% count(Group)
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(data.table)
+  library(readxl)
+  library(stringr)
+  library(GenomicRanges)
+  library(IRanges)
+})
+
+final2 <- as.data.table(final2)
+stopifnot("hg38_key" %in% names(final2))
+
+andrews_path <- "/projects_ng/tfm_lia/andrews/Data S1.xlsx"
+andrews <- as.data.table(readxl::read_xlsx(andrews_path))
+stopifnot(all(c("Chrom","Start","Stop","Group") %in% names(andrews)))
+
+andrews[, `:=`(
+  Chrom = as.character(Chrom),
+  Start = as.integer(Start),
+  Stop  = as.integer(Stop),
+  Group = as.character(Group)
+)]
+andrews <- andrews[!is.na(Chrom) & !is.na(Start) & !is.na(Stop) & Stop >= Start]
+
+# por si Andrews viniese sin "chr"
+andrews[!startsWith(Chrom, "chr"), Chrom := paste0("chr", Chrom)]
+
+gr_a <- GRanges(
+  seqnames = andrews$Chrom,
+  ranges   = IRanges(start = andrews$Start, end = andrews$Stop)
+)
+mcols(gr_a)$Group <- andrews$Group
+
+# -------------------------
+# PARSER hg38_key (dos formatos)
+# A) chr10:100000055:100000058
+# B) hg38:chr10:100000427-100000433:+:1885542
+# -------------------------
+
+key <- final2$hg38_key
+
+chr <- start <- end <- rep(NA_character_, length(key))
+
+# A) chr:start:end (tu caso actual)
+mA <- str_match(key, "^(chr[^:]+):([0-9]+):([0-9]+)$")
+isA <- !is.na(mA[,1])
+chr[isA]   <- mA[isA,2]
+start[isA] <- mA[isA,3]
+end[isA]   <- mA[isA,4]
+
+# B) hg38:chr:start-end:...
+mB <- str_match(key, "^(hg38:)?(chr[^:]+):([0-9]+)-([0-9]+):([+-]):([0-9]+)$")
+isB <- !is.na(mB[,1]) & !isA
+chr[isB]   <- mB[isB,3]
+start[isB] <- mB[isB,4]
+end[isB]   <- mB[isB,5]
+
+start <- suppressWarnings(as.integer(start))
+end   <- suppressWarnings(as.integer(end))
+
+valid <- !is.na(chr) & !is.na(start) & !is.na(end) & end >= start
+message("Parsed valid hg38_key: ", sum(valid), " / ", nrow(final2))
+
+# Si tu hg38_key viene de BED0 (start0), para GRanges 1-based sería start+1
+# Como no sabemos, probamos primero sin shift:
+gr_q <- GRanges(seqnames = chr[valid], ranges = IRanges(start = start[valid], end = end[valid]))
+mcols(gr_q)$row_i <- which(valid)
+
+hits <- findOverlaps(gr_q, gr_a, ignore.strand = TRUE)
+message("Overlaps (no shift): ", length(hits))
+
+# Si sale 0, prueba shift +1 (BED0 -> 1-based)
+if (length(hits) == 0) {
+  gr_q <- GRanges(seqnames = chr[valid], ranges = IRanges(start = start[valid] + 1L, end = end[valid]))
+  mcols(gr_q)$row_i <- which(valid)
+  hits <- findOverlaps(gr_q, gr_a, ignore.strand = TRUE)
+  message("Overlaps (+1 shift): ", length(hits))
+}
+
+# añadir columnas a final2
+final2[, andrews_overlap := FALSE]
+final2[, andrews_groups := NA_character_]
+
+if (length(hits) > 0) {
+  dt_hits <- data.table(
+    row_i = mcols(gr_q)$row_i[queryHits(hits)],
+    Group = mcols(gr_a)$Group[subjectHits(hits)]
+  )
+  agg <- dt_hits[, .(andrews_groups = paste(unique(Group), collapse=";")), by=row_i]
+
+  final2 <- final2 %>% mutate(row_i=1:n())
+  final2 <- final2 %>%  left_join(agg, by = "row_i") 
+}
+
+final2[, .N, by = andrews_overlap]
+
+
+
+
+```
+
+# upsetplot 
+
+
+
+```{r}
+# UpSet-like con 3 paneles:
+# (abajo) matriz de sets
+# (medio) barplot total (counts, sin color)
+# (arriba) barplot 0-1 (porcentaje accesible, stacked accessible vs not_accessible)
+
+count_table <- final2 %>% count(andrews_groups.y, summit_intersect)
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+  library(ggplot2)
+  library(patchwork)
+})
+
+plot_dir <- "/users/genomics/josema/primates_tree_fasta/plots"
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+canon_combo <- function(x) {
+  ifelse(is.na(x) | x == "",
+         NA_character_,
+         vapply(strsplit(as.character(x), ";", fixed = TRUE),
+                function(v) paste(sort(unique(v)), collapse = ";"),
+                character(1)))
+}
+
+# ---- 1) Canon + resumen por combo ----
+ct <- count_table %>%
+  mutate(combo = canon_combo(andrews_groups.y)) %>%
+  group_by(combo, summit_intersect) %>%
+  summarise(n = sum(n), .groups = "drop")
+
+combo_summ <- ct %>%
+  group_by(combo) %>%
+  summarise(
+    total = sum(n),
+    accessible = sum(n[summit_intersect == TRUE], na.rm = TRUE),
+    not_accessible = sum(n[summit_intersect == FALSE], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    acc_prop = if_else(total > 0, accessible / total, NA_real_)
+  ) %>%
+  arrange(desc(total))
+
+combo_order <- combo_summ$combo
+
+# ---- 2) Panel ARRIBA: porcentaje (0-1) stacked ----
+prop_df <- combo_summ %>%
+  transmute(
+    combo = factor(combo, levels = combo_order),
+    accessible_prop = if_else(total > 0, accessible / total, 0),
+    not_accessible_prop = if_else(total > 0, not_accessible / total, 0)
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(accessible_prop, not_accessible_prop),
+    names_to = "accessibility",
+    values_to = "prop"
+  ) %>%
+  mutate(accessibility = recode(accessibility,
+                                accessible_prop = "accessible",
+                                not_accessible_prop = "not_accessible"))
+
+p_top <- ggplot(prop_df, aes(x = combo, y = prop, fill = accessibility)) +
+  geom_col() +
+  theme_classic() +
+  labs(x = NULL, y = "Fraction", title = "Accessibility fraction (0–1)") +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.02))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+# ---- 3) Panel MEDIO: total counts (sin color) ----
+p_mid <- combo_summ %>%
+  mutate(combo = factor(combo, levels = combo_order)) %>%
+  ggplot(aes(x = combo, y = total)) +
+  geom_col(fill = "grey30") +
+  geom_text(aes(label = total), vjust = -0.5, size = 3) +
+  theme_classic() +
+  labs(x = NULL, y = "Count", title = "Total per combination") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+# ---- 4) Panel ABAJO: matriz UpSet ----
+sets <- c("group-1","group-2","group-3","other")
+
+mat <- tibble(combo = combo_order) %>%
+  mutate(parts = strsplit(as.character(combo), ";", fixed = TRUE)) %>%
+  tidyr::unnest_longer(parts) %>%
+  mutate(present = TRUE) %>%
+  filter(parts %in% sets) %>%
+  distinct(combo, set = parts, present)
+
+mat <- tidyr::expand_grid(
+  combo = combo_order,
+  set = sets
+) %>%
+  left_join(mat, by = c("combo","set")) %>%
+  mutate(
+    present = if_else(is.na(present), FALSE, present),
+    combo = factor(combo, levels = combo_order),
+    set = factor(set, levels = rev(sets))
+  )
+
+p_bot <- ggplot(mat, aes(x = combo, y = set)) +
+  geom_point(aes(alpha = present), size = 4) +
+  scale_alpha_manual(values = c(`FALSE` = 0.1, `TRUE` = 1), guide = "none") +
+  theme_classic() +
+  labs(x = "Andrews group combination", y = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# ---- 5) Combine ----
+p <- p_top / p_mid / p_bot + plot_layout(heights = c(1.2, 1.4, 1))
+
+ggsave(
+  filename = file.path(plot_dir, "upset_andrews_combos_3panel.png"),
+  plot = p,
+  width = 13,
+  height = 9,
+  dpi = 300
+)
+
+p
+
+
+```
+
+# asociar a regiones 
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(GenomicFeatures)
+  library(GenomeInfoDb)
+  library(IRanges)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+})
+
+# ---- 0) Parsear "chr10:106257188:106257194" -> chr/start/end ----
+# CAMBIA "region" por tu columna real
+if (!all(c("chr","start","end") %in% names(final2))) {
+  stopifnot("hg38_key" %in% names(final2))
+
+  parts <- strsplit(final2$hg38_key, ":", fixed = TRUE)
+  final2$chr   <- vapply(parts, `[`, character(1), 1)
+  final2$start <- as.integer(vapply(parts, `[`, character(1), 2))
+  final2$end   <- as.integer(vapply(parts, `[`, character(1), 3))
+}
+
+# ---- 1) TxDb + features ----
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+genes_gr   <- genes(txdb)
+exons_gr   <- exons(txdb)
+introns_gr <- unlist(intronsByTranscript(txdb), use.names = FALSE)
+promoters_gr <- promoters(genes_gr, upstream = 2000, downstream = 500)
+
+# ---- 2) GRanges input ----
+
+
+final2 <- final2%>%mutate(row_i=1:n())  # clave de fila estable
+
+gr <- GRanges(seqnames = final2$chr, ranges = IRanges(final2$start, final2$end))
+mcols(gr) <- final2
+
+# Normaliza estilo chr (evita 0 hits por mismatch)
+seqlevelsStyle(gr) <- "UCSC"
+seqlevelsStyle(genes_gr) <- "UCSC"
+seqlevelsStyle(exons_gr) <- "UCSC"
+seqlevelsStyle(introns_gr) <- "UCSC"
+seqlevelsStyle(promoters_gr) <- "UCSC"
+
+common <- intersect(seqlevels(gr), seqlevels(genes_gr))
+gr <- keepSeqlevels(gr, common, pruning.mode = "coarse")
+genes_gr <- keepSeqlevels(genes_gr, common, pruning.mode = "coarse")
+exons_gr <- keepSeqlevels(exons_gr, common, pruning.mode = "coarse")
+introns_gr <- keepSeqlevels(introns_gr, common, pruning.mode = "coarse")
+promoters_gr <- keepSeqlevels(promoters_gr, common, pruning.mode = "coarse")
+
+# ---- 3) Annotation type ----
+hits_prom   <- overlapsAny(gr, promoters_gr, ignore.strand = TRUE)
+hits_exon   <- overlapsAny(gr, exons_gr,      ignore.strand = TRUE)
+hits_intron <- overlapsAny(gr, introns_gr,   ignore.strand = TRUE)
+
+feature <- ifelse(hits_prom, "promoter",
+           ifelse(hits_exon, "exon",
+           ifelse(hits_intron, "intron", "intergenic")))
+
+# ---- 4) nearest gene + distancia (sin desalinear filas) ----
+nearest <- distanceToNearest(gr, genes_gr, ignore.strand = TRUE)
+
+near_df <- data.frame(
+  row_i = queryHits(nearest),
+  nearest_gene_id = genes_gr$gene_id[subjectHits(nearest)],
+  nearest_gene_distance = mcols(nearest)$distance
+)
+
+# ---- 5) Output final (manteniendo TODAS las filas) ----
+base_df <- data.frame(
+  row_i = gr$row_i,
+  chr = as.character(seqnames(gr)),
+  start = start(gr),
+  end = end(gr),
+  feature = feature
+)
+
+orig_df <- as.data.frame(mcols(gr))
+orig_df$row_i <- gr$row_i
+
+final2_annot <- merge(
+  merge(orig_df, base_df, by = "row_i", all.x = TRUE, sort = FALSE),
+  near_df, by = "row_i", all.x = TRUE, sort = FALSE
+)
+
+# vuelve al orden original y limpia row_i
+final2_annot <- final2_annot[order(final2_annot$row_i), ]
+final2_annot$row_i <- NULL
+```
+
+```{r}
+final2_annot %>% count(feature)
+
+```
+
+# DE_genes
+
+```{r}
+DE_genes<-readRDS('/projects_ng/COMPARATIVE_GENOMICS/Joshy_et_al_2024/ALL_DEX_13_01_25.rds')
+```
+
+```{r}
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+
+final2_annot$nearest_gene_id <- as.character(final2_annot$nearest_gene_id)
+
+final2_annot$nearest_gene_symbol <- mapIds(
+  org.Hs.eg.db,
+  keys = final2_annot$nearest_gene_id,
+  keytype = "ENTREZID",
+  column = "SYMBOL",
+  multiVals = "first"
+)
+```
+
+```{r}
+final2_annot %>% filter(feature=='promoter') %>% filter(nearest_gene_symbol %in% DE_genes$gene) %>% distinct(nearest_gene_symbol)
+```
+

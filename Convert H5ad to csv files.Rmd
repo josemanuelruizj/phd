@@ -1,0 +1,139 @@
+```{python}
+import pandas as pd
+import scanpy as sc
+import anndata as ad
+```
+
+
+```{python}
+monkey=sc.read_h5ad('/users/genomics/josema/scdatasets/monkey/monkey.h5ad')
+monkey
+monkey.X
+monkey.obs_names
+monkey.var_names
+
+pd.DataFrame(monkey.var_names, columns=["gene"]).to_csv("/users/genomics/josema/monkey_var_names.csv", index=False)
+
+monkey[monkey.var_names== 'ENSG00000118432']
+monkey
+monkey.layers
+monkey[monkey.var_names[ 'ENSG00000118432']]
+monkey[:,['ENSG00000118432','ENSG00000188822','']]
+cnr1_monkey=monkey[:,["ENSG00000118432","ENSG00000188822",'ENSG00000161048','ENSG00000117480','ENSG00000165591','ENSG00000074416','ENSG00000164535','ENSG00000134780','ENSG00000119865','ENSG00000134595']]
+cnr1_monkey.layers['normalized']=cnr1_monkey.X
+cnr1_df=cnr1_monkey.to_df(layer='normalized')
+cnr1_df.to_csv('/users/genomics/josema/Monkey_cnr1cascade.csv', index=False)
+cnr1_df.to_csv('Monkey_cnr1cascade_index.csv', index=True)
+cnr1_monkey.var12G
+cnr1_monkey.obs
+cnr1_monkey.obs.to_csv('metadata_monkey.csv', index=True)
+quit
+quit()
+
+"CNR1","CNR2",'NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1','SOX2'
+
+"ENSG00000118432","ENSG00000188822",'ENSG00000161048','ENSG00000117480','ENSG00000165591','ENSG00000074416','ENSG00000164535','ENSG00000134780','ENSG00000119865','ENSG00000134595'
+```
+
+# si es h5 
+
+```{python}
+import h5py as h5
+import numpy as np
+
+monkey=h5.File('/users/genomics/josema/scdatasets/HumanFetalBrainPool.h5')
+monkey
+
+#<HDF5 file "HumanFetalBrainPool.h5" (mode r)>
+
+monkey.keys()
+
+#<KeysViewHDF5 ['shoji']>
+
+monkey=monkey['shoji']
+
+list(monkey)
+#['Accession', 'Age', 'AnnotationDefinition', 'AnnotationDescription', 
+#'AnnotationName', 'AnnotationPosterior', 'CellClass', 'CellCycleFraction', 'CellID', 'Chemistry', 
+#Chromosome', 'Class', 'ClusterID', 'Clusters', 'Donor', 'DoubletFlag', 'DoubletScore', 'DropletClass',
+#'Embedding', 'End', 'Enrichment', 'Expression', 'Factors', 'Gene', 'GeneNonzeros', 'GeneTotalUMIs',
+#'Linkage', 'Loadings', 'ManifoldIndices', 'ManifoldRadius', 'ManifoldWeights', 'MeanAge', 'MeanCellCycle',
+#' 'MeanDoubletScore', 'MeanExpression', 'MeanTotalUMI', 'MitoFraction', 'NCells', 'NGenes', 'Nonzeros',
+#'  'OverallTotalUMIs', 'PrevClusters', 'Recipe', 'Region', 'SampleID', 'SelectedFeatures', 'Sex', 'Species',
+#'   'Start', 'StdevExpression', 'Subdivision', 'Subregion', 'Tissue', 'TopLevelCluster', 'TotalUMIs', 'Trinaries',
+#'    'UnsplicedFraction', 'ValidCells', 'ValidGenes']
+
+pd.DataFrame(np.array(monkey['Accession']))
+pd.DataFrame(np.array(monkey['Gene']))
+
+pd.DataFrame(np.array(monkey['Gene']).astype(str))
+
+import numpy as np
+import pandas as pd
+
+target_genes = ['CNR1','CNR2','NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1','SOX2']
+
+genes = np.array(monkey['Gene']).astype(str)
+cells = np.array(monkey['CellID']).astype(str)
+
+gene_to_idx = {g: i for i, g in enumerate(genes)}
+
+found_genes = [g for g in target_genes if g in gene_to_idx]
+missing_genes = [g for g in target_genes if g not in gene_to_idx]
+
+idx = [gene_to_idx[g] for g in found_genes]
+
+# ordenar para h5py
+idx_sorted = sorted(idx)
+
+# extraer
+expr_subset = monkey['Expression'][:, idx_sorted]
+
+# DataFrame temporal con el orden del array extraído
+cells = np.array(monkey['CellID']).astype(str)
+
+expr_df = pd.DataFrame(
+    expr_subset,
+    index=cells,
+    columns=[genes[i] for i in idx_sorted]
+)
+
+# reordenar al orden original que tú pediste
+expr_df = expr_df.reindex(found_genes)
+
+print("Found:", found_genes)
+print("Missing:", missing_genes)
+
+
+embedding = np.array(monkey['Embedding'])
+
+meta = pd.DataFrame({
+    'CellID': cells,
+    'Subregion': np.array(monkey['Subregion']).astype(str),
+    'Tissue': np.array(monkey['Tissue']).astype(str),
+    'Age': np.array(monkey['Age']).astype(str),
+    'CellClass': np.array(monkey['CellClass']).astype(str)}, index=cells)
+
+for i in range(embedding.shape[1]):
+    meta[f'Embedding{i+1}'] = embedding[:, i]
+
+
+final_df = pd.concat([expr_df, meta], axis=1)
+
+final_df.to_csv("/users/genomics/josema/final_matrix_cnr1/BRAUN.csv")
+pd.DataFrame(np.array(monkey['Expression']))
+monkey['Expression'].shape
+```
+
+#
+
+```{r}
+
+```
+
+#
+
+```{r}
+
+```
+

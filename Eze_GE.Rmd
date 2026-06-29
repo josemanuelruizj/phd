@@ -1,0 +1,820 @@
+library(Seurat)
+library(tidyverse)
+library(furrr)
+library(future)
+
+library(BiocParallel)
+
+set_parallel <- function(slurm_check = TRUE,
+                         n.cores = 10,
+                         max_cores = Inf,
+                         future = TRUE,
+                         future.strategy = "multicore",
+                         future.mem.gb = 400,
+                         biocparallel = TRUE) {
+  
+  n.cores <- min(max_cores, n.cores)
+  message(paste(n.cores, "cores detected"))
+  
+  if (future) {
+    if (!is.null(future.mem.gb)) {
+      message(paste("Setting", future.mem.gb, "GB as memory threshold in `future` library"))
+      options(future.globals.maxSize = future.mem.gb * 1024^3)
+    }
+    message("Setting cores in `future` library")
+    future::plan(strategy = future.strategy, workers = n.cores)
+  }
+  
+  if (biocparallel) {
+    message("Setting cores in `BiocParallel` library")
+    BiocParallel::register(BiocParallel::MulticoreParam(n.cores))
+  }
+  
+  return(n.cores)
+}
+
+# Set parallel environment
+n.cores <- set_parallel(n.cores = 10, future.mem.gb = 400)
+    
+    
+# Ruta del archivo RDS
+rds_path <- "/users/genomics/josema/EZE_all_seurat_objects_list.rds"
+
+if (file.exists(rds_path)) {
+  message("Archivo RDS encontrado. Leyéndolo...")
+  seurat_list <- readRDS(rds_path)
+} else {
+    # Función para cargar y normalizar rápido cada dataset desde carpeta
+    process_one <- function(folder) {
+      message("📦 Procesando: ", basename(folder))
+    
+      mat_path <- file.path(folder, "matrix.mtx")
+      barcodes_path <- file.path(folder, "barcodes.tsv")
+      genes_path <- list.files(folder, folder, pattern = "genes.tsv|features.tsv", full.names = TRUE)
+    
+      if (length(genes_path) == 0) stop("❌ No genes/features.tsv found in: ", folder)
+    
+      counts <- ReadMtx(mtx = mat_path, features = genes_path, cells = barcodes_path)
+      seu <- CreateSeuratObject(counts = counts)
+      seu$dataset <- basename(folder)
+    
+      seu <- NormalizeData(seu, normalization.method = "LogNormalize", scale.factor = 1e6)
+      seu <- FindVariableFeatures(seu, selection.method = "vst", nfeatures = 2000)
+      seu <- ScaleData(seu, features = VariableFeatures(seu))
+    
+      return(seu)
+    }
+    
+    
+    integrate_seurat_list <- function(seurat_list) {
+      message("🔗 Integrando ", length(seurat_list), " datasets...")
+    
+      features <- SelectIntegrationFeatures(seurat_list, nfeatures = 3000)
+      seurat_list <- lapply(seurat_list, function(seu) {
+        seu <- ScaleData(seu, features = features)
+        seu <- RunPCA(seu, features = features)
+        return(seu)
+      })
+      
+      top_features <- SelectIntegrationFeatures(object.list = seurat_list, nfeatures = 3000)
+      
+      # Add your known markers (keeping only those that exist in all datasets)
+      marker_genes <- c(
+        'STMN2','MAP2','DCX','GAP43','SYT5',       # Neuron
+        'TBR1','SLC17A7','SLC17A6',                # EN
+        'SLC32A1','GAD2','DLX2','ASCL1',           # IN
+        'NHLH1','NEUROD4',                         # nEN
+        'EOMES','NEUROG1',                         # IPC
+        'HOPX','MOXD1','PTN',                      # oRG
+        'HES1','PAX6','SOX2','ID4',                # RG
+        'SAMD4A','CCN2',                           # tRG
+        'ASPM',                                    # Cell div
+        'FOXJ1','GMNC'                             # Epend
+      )
+      
+      # Ensure markers are present in all datasets
+      top_features <- unique(c(top_features, marker_genes))
+      
+      
+    
+      anchors <- FindIntegrationAnchors(object.list = seurat_list, anchor.features = features, 
+                                        normalization.method = "LogNormalize", dims = 1:30)
+      
+      anchors <-  readRDS('EZE_all_seurat_objects_list_anchors.rds')
+    
+      integrated <- IntegrateData(anchorset = anchors, normalization.method = "LogNormalize", dims = 1:15, k.weight=50)
+    
+      saveRDS(integrated,'EZE_all_seurat_integrated_unprocesed.rds')
+      
+      integrated <- ScaleData(integrated)
+      integrated <- RunPCA(integrated)
+      integrated <- RunUMAP(integrated, dims = 1:30)
+      integrated <- FindNeighbors(integrated, dims = 1:30)
+      integrated <- FindClusters(integrated)
+      saveRDS(integrated,'EZE_all_seurat_integrated_procesed_wclusters.rds')
+      
+      return(integrated)
+    
+    
+    
+    # Lista de carpetas con datos (ajusta path si hace falta)
+    data_dirs <- list.dirs(path = "/projects_ng/SC_DATA/Eze/GE_data", recursive = FALSE)
+    
+    # Paraleliza la carga y procesamiento rápido de cada carpeta
+    seurat_list <- future_map(data_dirs, process_one, .progress = TRUE)
+    
+    # Guarda la lista completa en un RDS
+    saveRDS(seurat_list, file = "/users/genomics/josema/EZE_all_seurat_objects_list.rds")
+}
+
+# Integra todos los SeuratObjects
+integrated <- integrate_seurat_list(seurat_list)
+
+# Guarda el objeto integrado final
+saveRDS(integrated, "/users/genomics/josema/EZE_seurat_integrated.rds")
+
+# Plot rápido para ver que todo ok
+pdf(file = '/users/genomics/josema/Eze_GE_dimplot.pdf')
+DimPlot(integrated, group.by = "dataset", label = TRUE, repel = TRUE) + NoLegend()
+dev.off()
+
+#################
+
+library(Seurat)
+library(tidyverse)
+
+```{r}
+integrated_EZE<- readRDS("/users/genomics/josema/EZE_all_seurat_integrated_procesed_wclusters.rds")
+```
+
+
+```{r}
+pdf(file = '/users/genomics/josema/Eze_GE_dimplot.pdf')
+DimPlot(integrated_EZE, group.by = "dataset", label = TRUE, repel = TRUE) + NoLegend()
+dev.off()
+```
+
+```{r}
+integrated_EZE <- FindClusters(integrated_EZE,resolution=c(0.3))
+```
+
+```{r}
+gene_sets <- list(
+  Progenitors = c("SOX2", "NES", "PAX6"),
+  Ventral_Prog= c('NKX2-1', 'GSX2'),
+  Mitosis     = c("MKI67", "TOP2A", "CENPF"),
+  IPCi        = c("ASCL1", "DLX1"),
+  CGE_iN      = c("ADARB2", "RELN", "SP8"),
+  MGE_iN      = c("SST", "PVALB", "LHX6"),
+  OLIG        = c("MBP", "MOG"),
+  ASTRO       = c('AQP4', 'GFAP', 'S100B')
+)
+
+DefaultAssay(integrated_EZE) <- "RNA"
+
+
+pdf(file = '/users/genomics/josema/Eze_GE_features.pdf')
+
+# Genera un FeaturePlot por cada grupo de genes
+plots <- lapply(names(gene_sets), function(set_name) {
+  FeaturePlot(
+    integrated_EZE,
+    features = gene_sets[[set_name]],
+    reduction = "umap",
+    slot='data',
+    cols = c("lightgrey", "red"),
+    combine = TRUE,
+    raster=F
+  ) 
+})
+print(plots)
+dev.off()
+
+```
+
+```{r}
+
+pdf(file = '/users/genomics/josema/Eze_GE_features_dotplot.pdf', width = 12, height = 18)
+
+markers_cerebellum <- c(
+  # Progenitors
+  "SOX2", "NES", "PAX6", "GLI1", "GLI2", "GLI3", "HES1", "HES5",
+  # Mitosis
+  "MKI67", "TOP2A", "CENPF", "PCNA", "UBE2C",
+  # Granule cells
+  "ATOH1", "NEUROD1", "ZIC1", "ZIC2", "ZIC5",
+  # Purkinje cells
+  "CALB1", "PCP4", "LHX5", "RORA", "GRID2",
+  # Interneurons
+  "GAD1", "GAD2", "PVALB", "RELN", "SP8",
+  # Bergmann glia / astro
+  "GFAP", "AQP4", "S100B", "FABP7",
+  # Oligodendrocytes
+  "OLIG1", "OLIG2", "SOX10", "MBP", "PLP1", "PDGFRA"
+)
+
+DefaultAssay(integrated_EZE) <- "RNA"
+
+DotPlot(
+  integrated_EZE,
+  features = markers_cerebellum,
+  group.by = "seurat_clusters",
+  assay = "RNA"
+) + RotatedAxis()
+
+
+DotPlot(
+  integrated_EZE,
+  features = markers_cerebellum,
+  group.by = "seurat_clusters",
+  assay = "RNA") + 
+  RotatedAxis() +
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+dev.off()
+
+```
+
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+
+pdf(file = '/users/genomics/josema/Eze_GE_features_dotplot_reordered.pdf', width = 12, height = 18)
+
+
+DefaultAssay(integrated_EZE) <- "RNA"
+
+# 1. Generar el DotPlot (sin plotear aún)
+dp <- DotPlot(
+  integrated_EZE,
+  features = markers_cerebellum,
+  group.by = "seurat_clusters",
+  assay = "RNA",
+)
+
+df <- dp$data
+
+# 2. Reordenar clusters según similitud
+mat <- df %>%
+  select(id, features.plot, avg.exp.scaled) %>%
+  tidyr::pivot_wider(names_from = features.plot, values_from = avg.exp.scaled) %>%
+  tibble::column_to_rownames("id")
+
+# Matriz con valores medios de cada cluster
+mat[is.na(mat)] <- 0
+
+# Clustering jerárquico
+hc <- hclust(dist(mat))
+new_order <- hc$labels[hc$order]
+
+# 3. Reasignar orden de los niveles
+df$id <- factor(df$id, levels = new_order)
+
+# 4. Plot final con escala divergente
+ggplot(df, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    coord_flip()
+
+dev.off()
+```
+
+```{r}
+integrated_EZE<- readRDS("/users/genomics/josema/integrated_eze_reclustering_0.3.rds")
+DefaultAssay(integrated_EZE) <- "RNA"
+integrated_EZE[["percent.mt"]] <- PercentageFeatureSet(integrated_EZE, pattern = "^MT-")
+integrated_EZE[["percent.ribo"]] <- PercentageFeatureSet(integrated_EZE, pattern = "^RPS|^RPL")
+```
+
+
+```{r}
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(aspect.ratio = 1)
+)
+
+library(patchwork)
+pdf(file = '/users/genomics/josema/Eze_GE_qc.pdf', width = 12, height = 12)
+
+# 1) UMAP coloreado por métricas QC
+p1 <- FeaturePlot(integrated_EZE, features = "nFeature_RNA", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+p2 <- FeaturePlot(integrated_EZE, features = "nCount_RNA", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+p3 <- FeaturePlot(integrated_EZE, features = "percent.mt", reduction = "umap", raster = FALSE), order = TRUE)+
+    theme(aspect.ratio = 1)
+p4 <- FeaturePlot(integrated_EZE, features = "percent.ribo", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+
+# 2) Violin plots por cluster
+VlnPlot(
+  integrated_EZE,
+  features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"),
+  group.by = "seurat_clusters",
+  pt.size = 0,
+  ncol = 2,
+  combine = F
+)
+
+# Mostrar resultados
+p1;p2;p3;p4
+vln_qc
+
+dev.off()
+```
+
+
+```{r}
+integrated_EZE_filtered@meta.data <- integrated_EZE_filtered@meta.data %>%
+  mutate(
+    age = str_extract(dataset, "^(GW\\d+|CS\\d+)"),
+    dissection = str_extract(dataset, "(MGE|LGE|CGE|GE)")
+  )
+```
+
+
+```{r}
+# Extraemos el metadata con cluster, age y dissection
+meta <- integrated_EZE@meta.data %>%
+  select(seurat_clusters, age, dissection)
+
+# --- Barplot stacked por edad ---
+bar_age <- meta %>%
+  count(seurat_clusters, age) %>%
+  ggplot(aes(x = seurat_clusters, y = n, fill = age)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Cell distribution per cluster by age",
+    x = "Cluster",
+    y = "Number of cells"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# --- Barplot stacked por región ---
+bar_dissection <- meta %>%
+  count(seurat_clusters, dissection) %>%
+  ggplot(aes(x = seurat_clusters, y = n, fill = dissection)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Cell distribution per cluster by dissection region",
+    x = "Cluster",
+    y = "Number of cells"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+#relativo 
+bar_age_rel <- meta %>%
+  count(seurat_clusters, age) %>%
+  group_by(seurat_clusters) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ggplot(aes(x = seurat_clusters, y = pct, fill = age)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Relative cell distribution per cluster by age",
+    x = "Cluster",
+    y = "Percentage of cells"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# --- Barplot stacked por región (en %) ---
+bar_dissection_rel <- meta %>%
+  count(seurat_clusters, dissection) %>%
+  group_by(seurat_clusters) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ggplot(aes(x = seurat_clusters, y = pct, fill = dissection)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Relative cell distribution per cluster by dissection region",
+    x = "Cluster",
+    y = "Percentage of cells"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# Mostrar plots
+pdf(file = '/users/genomics/josema/Eze_GE_qc_2.pdf', width = 12, height = 12)
+
+bar_age
+bar_age_rel
+bar_dissection
+bar_dissection_rel
+dev.off()
+```
+
+
+```{r}
+library(Seurat)
+library(ggplot2)
+
+# UMAP coloreado por edad
+umap_age <- DimPlot(
+  integrated_EZE,
+  group.by = "age",
+  reduction = "umap",
+  raster = FALSE, 
+  label = T
+) +
+  labs(title = "UMAP colored by age") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+# UMAP coloreado por región de disección
+umap_dissection <- DimPlot(
+  integrated_EZE,
+  group.by = "dissection",
+  reduction = "umap",
+  raster = FALSE,
+  label = T
+) +
+  labs(title = "UMAP colored by dissection region") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+# Mostrar plots
+
+
+
+pdf(file = '/users/genomics/josema/Eze_GE_qc_3.pdf', width = 12, height = 12)
+
+umap_age
+umap_dissection
+dev.off()
+
+```
+
+
+# filtered eze 
+
+```{r}
+integrated_EZE_filtered <- subset(
+  integrated_EZE,
+  subset = nFeature_RNA > 200 & nFeature_RNA < 2500 &
+           nCount_RNA > 500 & nCount_RNA < 25000 &
+           percent.mt < 5
+)
+```
+
+
+```{r}
+DefaultAssay(integrated_EZE_filtered) <- "integrated"
+
+integrated_EZE_filtered <- ScaleData(integrated_EZE_filtered)
+integrated_EZE_filtered <- RunPCA(integrated_EZE_filtered)
+integrated_EZE_filtered <- RunUMAP(integrated_EZE_filtered, dims = 1:30)
+integrated_EZE_filtered <- FindNeighbors(integrated_EZE_filtered, dims = 1:30)
+integrated_EZE_filtered <- FindClusters(integrated_EZE_filtered,  resolution = 0.5 )
+
+```
+
+```{r}
+
+DefaultAssay(integrated_EZE_filtered) <- "RNA"
+
+
+pdf(file = '/users/genomics/josema/Eze_GE_features_filtered.pdf')
+
+# Genera un FeaturePlot por cada grupo de genes
+plots <- lapply(names(gene_sets), function(set_name) {
+  FeaturePlot(
+    integrated_EZE_filtered,
+    features = gene_sets[[set_name]],
+    reduction = "umap",
+    slot='data',
+    cols = c("lightgrey", "red"),
+    combine = TRUE,
+    raster=F
+  ) +
+    theme(aspect.ratio = 1)
+})
+print(plots)
+
+
+plots <- lapply(names(gene_sets), function(set_name) {
+  FeaturePlot(
+    integrated_EZE_filtered,
+    features = gene_sets[[set_name]],
+    reduction = "umap",
+    slot='data',
+    cols = c("lightgrey", "red"),
+    combine = TRUE,
+    raster=F,
+    order = T
+  ) +
+    theme(aspect.ratio = 1)
+})
+print(plots)
+
+dev.off()
+
+```
+
+
+
+
+```{r}
+# UMAP coloreado por edad
+umap_age <- DimPlot(
+  integrated_EZE_filtered,
+  group.by = "age",
+  reduction = "umap",
+  raster = FALSE, 
+  label = T
+) +
+  labs(title = "UMAP colored by age") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+# UMAP coloreado por región de disección
+umap_dissection <- DimPlot(
+  integrated_EZE_filtered,
+  group.by = "dissection",
+  reduction = "umap",
+  raster = FALSE,
+  label = T
+) +
+  labs(title = "UMAP colored by dissection region") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+umap_cluster <- DimPlot(
+  integrated_EZE_filtered,
+  group.by = "seurat_clusters",
+  reduction = "umap",
+  raster = FALSE,
+  label = T
+) +
+  labs(title = "UMAP colored by dissection region") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+pdf(file = '/users/genomics/josema/Eze_GE_qc_4.pdf', width = 12, height = 12)
+
+umap_age
+umap_dissection
+umap_cluster
+dev.off()
+
+  
+```
+
+
+```{r}
+
+pdf(file = '/users/genomics/josema/Eze_GE_filtered_qc.pdf', width = 12, height = 12)
+
+# 1) UMAP coloreado por métricas QC
+p1 <- FeaturePlot(integrated_EZE_filtered, features = "nFeature_RNA", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+p2 <- FeaturePlot(integrated_EZE_filtered, features = "nCount_RNA", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+p3 <- FeaturePlot(integrated_EZE_filtered, features = "percent.mt", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+p4 <- FeaturePlot(integrated_EZE_filtered, features = "percent.ribo", reduction = "umap", raster = FALSE, order = TRUE)+
+    theme(aspect.ratio = 1)
+
+# 2) Violin plots por cluster
+VlnPlot(
+  integrated_EZE_filtered,
+  features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"),
+  group.by = "seurat_clusters",
+  pt.size = 0,
+  ncol = 2,
+  combine = F
+)
+
+# Mostrar resultados
+p1;p2;p3;p4
+vln_qc
+
+dev.off()
+```
+
+
+```{r}
+library(ComplexHeatmap)
+
+# 1. Usar el assay correcto
+DefaultAssay(integrated_EZE_filtered) <- "RNA"
+
+# 2. Calcular pseudobulk por cluster y gen
+pseudobulk_genes <- AggregateExpression(
+  integrated_EZE_filtered,
+  features = unique(unlist(gene_sets)),
+  group.by = "seurat_clusters", 
+  assays = "RNA",
+  slot = "data"
+)
+
+mat <- as.matrix(pseudobulk_genes$RNA)
+
+# 3. Reordenar genes según tu listado
+genes_order <- unlist(gene_sets)
+mat <- mat[genes_order, , drop = FALSE]
+
+scale_rows <- function(x) {
+  (x - mean(x)) / sd(x)
+}
+mat_z <- t(apply(mat, 1, scale_rows))
+
+# 6. Guardar heatmap como PDF
+pdf(file = "/users/genomics/josema/Eze_GE_filtered_heatmap.pdf", width = 12, height = 12)
+
+Heatmap(
+  mat_z,
+  name = "zscore",
+  cluster_columns = TRUE,   # clusters se reordenan
+  cluster_rows = FALSE,     # genes en orden fijo
+  row_order = genes_order,
+  show_row_names = TRUE,
+  show_column_names = TRUE
+)
+
+dev.off()
+
+```
+
+
+```{r}
+integrated_EZE_filtered <- BuildClusterTree(
+  integrated_EZE_filtered,
+  features = VariableFeatures(integrated_EZE_filtered),
+  dims = 1:30
+)
+
+
+# Asegurar que la columna es character
+integrated_EZE_filtered@meta.data <- integrated_EZE_filtered@meta.data %>%
+  mutate(seurat_clusters = as.character(seurat_clusters))
+
+# Definir orden_x como character
+orden_x <- c(
+  18, 9, 2, 1, 20, 10, 21, 11, 6, 5,
+  19, 16, 12, 13, 0, 14, 8, 15, 4, 17,
+  7, 26, 3, 29, 24, 23, 22, 25, 30, 27, 31, 28
+) 
+
+# Reordenar los niveles
+integrated_EZE_filtered@meta.data <- integrated_EZE_filtered@meta.data %>%
+  mutate(seurat_clusters = factor(seurat_clusters, levels =  rev(c(
+  18, 9, 2, 1, 20, 10, 21, 11, 6, 5,
+  19, 16, 12, 13, 0, 14, 8, 15, 4, 17,
+  7, 26, 3, 29, 24, 23, 22, 25, 30, 27, 31, 28
+))),
+celltype= case_when(seurat_clusters%in%c(24,29,3)~'Prog',
+                    seurat_clusters%in%c(25,22,23)~'ASTRO',
+                    seurat_clusters%in%c(15,8,14,0,13,12,16,19)~'IPC',
+                    seurat_clusters%in%c(1,2,9,18)~'Mit_IPC',
+                    TRUE~'Other'),
+celltype_age=paste(celltype,age, sep = '_'))
+
+pdf(file = "/users/genomics/josema/Eze_GE_filtered_clustertree.pdf", width = 12, height = 12)
+
+PlotClusterTree(
+  integrated_EZE_filtered,
+  direction = "downwards"
+)
+
+DotPlot(
+  integrated_EZE_filtered,
+  features = as.vector(unlist(gene_sets)),
+  group.by = "seurat_clusters",
+  assay = "RNA") + coord_flip()+
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0
+  )
+
+DotPlot(
+  integrated_EZE_filtered,
+  features = c('CNR1','CNR2','NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1'),
+  group.by = "seurat_clusters",
+  assay = "RNA") + coord_flip()+
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0
+  )
+
+# Marcadores de interneuronas (RNA-seq)
+interneuron_markers <- c(
+  # Generales
+  "GAD1", "GAD2", "SLC32A1",
+  
+  # Subtipos principales
+  "PVALB", "SST", "VIP", "CALB2",
+  
+  # Linaje / origen embrionario
+  "NKX2-1", "LHX6", "SOX6", 
+  "NR2F2", "PROX1", "SP8",
+  "HMX3", "DBX1",
+  
+  # Otros genes relevantes
+  "NPY", "RELN", "KIT", "HTR3A", 
+  "ERBB4", "LAMP5"
+)
+
+DotPlot(
+  integrated_EZE_filtered,
+  features = interneuron_markers,
+  group.by = "seurat_clusters",
+  assay = "RNA") + coord_flip()+
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0
+  )
+
+
+DotPlot(
+  integrated_EZE_filtered,
+  features = c('CNR1','CNR2','NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1'),
+  group.by = "celltype_age",
+  assay = "RNA") + coord_flip()+
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0
+  )+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+
+# Sacar la data que usa DotPlot
+plot_data <- DotPlot(
+  integrated_EZE_filtered,
+  features = c('CNR1','CNR2','NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1'),
+  group.by = "celltype_age",
+  assay = "RNA"
+)$data
+
+# Tileplot en vez de dotplot
+library(ggplot2)
+
+ggplot(plot_data, aes(x = features.plot, y = id, fill = avg.exp.scaled)) +
+  geom_tile() +
+  coord_flip() +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+
+
+DimPlot(
+  integrated_EZE_filtered,
+  group.by = "celltype",
+  reduction = "umap",
+  raster = FALSE, 
+  label = T
+) +
+  labs(title = "UMAP colored by celltype") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+FeaturePlot(
+  integrated_EZE_filtered,
+  features = "CNR1",
+  raster = FALSE, 
+  order  = T
+) +
+  labs(title = "UMAP colored by CNR1") +
+  theme_minimal(base_size = 12) +
+  theme(aspect.ratio = 1)
+
+dev.off()
+
+```
+
+```{r}
+
+```
+

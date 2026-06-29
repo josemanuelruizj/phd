@@ -1,0 +1,780 @@
+---
+title: "Trevino_analisis"
+output: html_document
+date: "2024-03-01"
+---
+
+Open the libraries
+
+```{r libraries}
+library(tidyverse)
+library(readr)
+library(ggupset)
+library(Seurat)
+```
+
+# Create SEURAT object
+
+In first place we load the different data files. We have 2 different data classes: The main data files and the metadata. Metadata is divided in two different files: gene metadata and cell metadata.
+
+```{r 'read raw data'}
+##### read counts 
+count_data<- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/counts.tsv')
+count_data<- count_data %>% column_to_rownames(var="...1")
+
+##### read metadata
+metadata <- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/meta_cells.tsv')
+metadata<- metadata %>% column_to_rownames(var="...1")
+
+genes_metadata <- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/meta_genes.tsv')
+genes_metadata<- genes_metadata %>% column_to_rownames(var="...1")
+```
+
+Now we do merge the different files creating a seurat object, using `CreateSeuratObject.`
+
+**WARNING**: In python, both data files (count data and metadata) have the same structure (columns= gene names, rows= Cell), but `CreateSeuratObject` uses different data sstructures for counts ((columns= Cell, rows= Genes),) and meta.data (same as python).
+
+```{r seurat object}
+# create seurat object
+data <- CreateSeuratObject(counts=t(as.matrix(count_data)),
+                          # transpose of the count matrix because
+                          # we need to set the cell names as columns
+                          meta.data=metadata)
+
+# add UMAP data to seurat object 
+
+dimensions <- as.matrix(data@meta.data[,c("UMAP_0","UMAP_1")])
+colnames(dimensions) <- c("UMAP_1","UMAP_2")
+
+data[['UMAP']] <- CreateDimReducObject(embeddings = dimensions,
+                                       key = "UMAP_",
+                                       global = T,
+                                       assay = "RNA")
+```
+
+Ploteamos el UMAP
+
+```{r UMAP plot}
+#Create an UMAP plot of our results 
+plot <- Embeddings(data, reduction = 'UMAP') %>%
+  cbind(data['reannotated type']) %>% 
+  as.data.frame() %>% 
+  ggplot(., aes(x=UMAP_1, y=UMAP_2, color=reanotated))+
+  geom_point() 
+
+ggsave(plot,
+       filename = "/users/genomics/josema/Trevino/umap.pdf",
+       device = "pdf",
+       height = 5, width = 6, units = "in")
+```
+
+# Data analysis
+
+```{r 'data analysis'}
+
+#Normalize data
+data <- NormalizeData(data,
+                      normalization.method = "LogNormalize",
+                      scale.factor = 10000)
+#Variable  features (top 10)
+data <- FindVariableFeatures(data,
+                             nfeatures = 2000)
+top10 <- head(VariableFeatures(data), 10)
+
+#plot the variables
+VariableFeaturePlot(data) %>% 
+  #plot variables names
+  LabelPoints(plot = .,
+              points = top10,
+              repel = TRUE) %>% 
+  # save the plot
+  ggsave(filename = "/users/genomics/josema/Trevino/feature.pdf",
+         device = "pdf",
+         height = 5, width = 6, units = "in")
+
+#Scale data
+data <- ScaleData(data, 
+                  features = rownames(data))
+# PCA
+data <- RunPCA(data,
+               features = VariableFeatures(object = data))
+# Neighbours and clusters
+data <- FindNeighbors(data, dims = 1:30, reduction = "pca")
+data <- FindClusters(data, resolution = 2, cluster.name = "unintegrated_clusters")
+```
+
+Now we save the data to create a **checkpoint** for future analysis
+
+```{r checkpoint}
+#saveRDS(data, '~/Trevino/RDS_files/data.RDS')
+data<-readRDS('~/Trevino/RDS_files/data.RDS')
+```
+
+# Filtering and processing data
+
+Now that we have the expression data of all our cell lines genes, we are going to set the genes that are interesting for our analysis. We used the gene list from Xabier's review, based on the paper "The Human Transcription Factors" (Lambert et al 2018)
+
+```{r 'filtering bHLHs'}
+# Load dataset of genes that are interesting and extract gene Symbols
+table_bhlh<- read_csv('~/Trevino/factors_classification.csv') 
+bhlh_symbol <- table_bhlh %>% pull(Symbol) 
+
+# For future analysis we are going to filter only the genes that are highly related with neurogenesis (filtering only neuroG, neuroD, ID and HES)
+bhlh_filtered_symbol <- bhlh_symbol %>%
+  grep('NEUROD.*|NEUROG.*|TCF.*|ID.*|HES.*',
+       .,
+       value = T) 
+
+```
+
+# Select bHLH genes
+
+```{r}
+# Extract a dataframe with the expression of all  bHLH genes
+dataframe_bHLH <- LayerData(data, assay = "RNA", layer = "data") %>% 
+  as.data.frame() %>%
+  filter(rownames(.)%in%bhlh_symbol) %>% 
+  t() %>% 
+  as.data.frame()
+```
+
+# UpSet plots
+
+In this step we re going to determine for every cell line if a gene is expressed or not. To determine that we could use different thresholds, but as a preliminary analysis **we are going to** **consider that every value different to 0 means expression of a gene**.
+
+To use ggUpset and create an upset plot using ggplot, we have to create a data frame that contains a column with a list of all genes that are expressed on each cell.
+
+```{r 'cargar datos'}
+####### load de los datos atajos ######
+upset_imput_grouped_by_type <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_grouped_by_type.RDS')
+upset_imput_filtered <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_filtered.RDS')
+upset_imput <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput.RDS')
+```
+
+```{r upset plot}
+upset_imput <-  dataframe_bHLH%>% 
+  rownames_to_column('ID') %>% 
+  rowwise() %>%
+  mutate(bHLHs = list(names(.)[which(c_across(-ID) != 0)])) %>% 
+  select(ID,bHLHs)
+
+reannotated <- data$`reannotated type`%>% 
+  as.data.frame() %>% 
+  magrittr::set_colnames('reannotated') %>% 
+  rownames_to_column('ID')
+
+#Add a column with the annotation of every cell line 
+upset_imput <- inner_join(upset_imput,
+                          reannotated,
+                          by='ID')
+```
+
+```{r upset plot}
+upset_imput_filtered <-  dataframe_bHLH%>% 
+  select(bhlh_filtered_symbol) %>% 
+  rownames_to_column('ID') %>% 
+  rowwise() %>%
+  mutate(bHLHs = list(names(.)[which(c_across(-ID) != 0)])) %>% 
+  select(ID,bHLHs)
+  
+upset_imput_filtered <- inner_join(upset_imput_filtered,
+                          reannotated,
+                          by='ID')
+```
+
+Create groups of transcription factors
+
+```{r upset plot}
+# Upset by groups of TF
+upset_imput_grouped_by_type<- upset_imput_filtered %>% 
+  mutate(NEUROG=ifelse(any(grepl('NEUROG.*',bHLHs)), 'yes','no'),
+         NEUROD=ifelse(any(grepl('NEUROD.*',bHLHs)), 'yes','no'),
+         TCF=ifelse(any(grepl('TCF.*',bHLHs)), 'yes','no'),
+         ID_prot=ifelse(any(grepl('ID.*',bHLHs)), 'yes','no'),
+         HES=ifelse(any(grepl('HES.*',bHLHs)), 'yes','no')) %>%
+  pivot_longer(cols=-c(ID,bHLHs,reannotated),names_to = 'Genes', values_to = 'Expressed') %>% 
+  filter(Expressed=='yes') %>%
+  group_by(ID,bHLHs,reannotated) %>% 
+  summarize(families=list(Genes))
+  
+
+# Extraemos un listado de todos los tipos de anotaciones distintos que hay
+reannotation_types <- upset_imput_grouped_by_type %>%
+  filter(reannotated!='NA') %>% 
+  pull(reannotated) %>%
+  unique()
+```
+
+upset plot
+
+```{r upset plot}
+# Hacemos un upset general en el que se vean todos, quitando los NA
+upset_plot_filtered_all <- upset_imput_grouped_by_type %>% 
+  filter(reannotated !='NA') %>% 
+  ggplot(aes(x = families)) +
+  geom_bar(aes(fill=reannotated), position="fill")+
+  scale_x_upset()+
+  theme_classic()+
+  scale_y_continuous(expand = c(0, 0))
+
+
+ggsave(plot = upset_plot_filtered_all,
+       filename ="/users/genomics/josema/Trevino/all_upset.pdf",
+       device = "pdf",
+       height = 6, width =10 , units = "in")
+```
+
+```{r upset plot}
+#hacemos un bucle para hacer un upset de cada subtipo celular
+for (type in reannotation_types) {
+  upset_plot_filtered_group <- upset_imput_grouped_by_type %>% 
+    filter(reannotated==type) %>% 
+    ggplot(aes(x = families)) +
+    ggtitle(type)+
+    geom_bar(fill='lightcoral') +
+    scale_x_upset()+
+    theme_classic()+
+    scale_y_continuous(expand = c(0, 0))
+  
+  
+  ggsave(plot = upset_plot_filtered_group,
+         filename =str_c("/users/genomics/josema/Trevino/", type, "_upset.pdf"),
+         device = "pdf",
+         height = 6, width =10 , units = "in")
+}
+```
+
+```{r upset plot}
+upset_imput_grouped_by_type$families <- sapply(upset_imput_grouped_by_type$families[!!lengths(upset_imput_grouped_by_type$families)], toString)
+
+pseudotime_plot<- upset_imput_grouped_by_type %>% 
+  mutate(pseudotime=plyr::round_any(velocity_pseudotime*10,1,f=floor)) %>% 
+  group_by(families, pseudotime) %>% 
+  summarise(n=n()) %>% 
+  mutate(families=strsplit(families, ',')) %>% 
+  ggplot(aes(y=pseudotime, x=families))+
+  geom_point(aes(size=n))+
+  coord_flip()+
+  ggupset::scale_x_upset()+
+  theme_classic()
+
+ggsave(plot = pseudotime_plot,
+       filename ='~/pseudotime_plot.pdf',
+       device = "pdf",
+       height = 6, width =10 , units = "in")
+```
+
+```{r upset plot}
+imput_plot_upset <- upset_imput_grouped_by_type %>% 
+  group_by(reannotated) %>%
+  mutate(decile = ntile(velocity_pseudotime, 10)) %>% 
+  group_by(reannotated,decile,families) %>% 
+  summarise(n=n()) %>% 
+  group_by(reannotated,decile) %>% 
+  mutate(percent=(n/sum(n)),
+         families=strsplit(families, ','))
+
+```
+
+```{r ''}
+{for (type in reannotation_types) {}
+  pseudotime_plot<- imput_plot_upset%>% 
+    filter(reannotated==type) %>% 
+    ggplot(aes(y=decile, x=families))+
+    ggtitle(type)+
+    geom_point(aes(size=percent), color='lightcoral')+
+    ggupset::scale_x_upset()+
+    theme_classic()
+  
+  ggsave(plot = pseudotime_plot,
+         filename =str_c("/users/genomics/josema/Trevino/upsets_psudotime/",
+                         type,
+                         "_pseudotime_upset.pdf"),
+         device = "pdf",
+         height = 6, width =6 , units = "in")
+}
+
+
+```
+
+# How to properly set a threshold of expression
+
+As I found in this response in [Stack Exange](https://bioinformatics.stackexchange.com/questions/5046/find-a-cutoff-value-for-genes-that-are-expressed-in-single-cell-rna-seq):
+
+*"Much of the Seurat workflow incorporates normalized, scaled, and mean-centered expression values.*
+
+*Raw gene expression counts for a cell are normalized by total expression, multiplied by 10,000, and log transformed. Expression level for each gene is scaled by dividing the centered gene expression levels by their standard deviations, resulting in z-scores. It's not an ideal solution, but I find a threshold of 1 (in the realm of z-scores) to makesense. A z-score of 1 is one standard deviation from the mean, or what may be interpreted as baseline expression."*
+
+**So I'll consider the threshold of expression when a z-score value is higher than 1**
+
+```{r}
+data<-readRDS('~/Trevino/RDS_files/data.RDS')
+
+upset_imput_grouped_by_type <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_grouped_by_type.RDS')
+upset_imput_filtered <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_filtered.RDS')
+upset_imput <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput.RDS')
+```
+
+# reannotation
+
+which annotation systen is the right one? there are multiple columns that are related with the annotation system. If we represent how data changes across multiple classifications using an alluvial plot, we obtain this graphic
+
+```{r}
+library(ggalluvial)
+plot_classification <- metadata %>% 
+  select(`original type`,
+         `final type`,
+         `was reannot`) %>% 
+  filter(`was reannot`=='TRUE') %>% 
+  rownames_to_column('cell') %>% 
+  count(`original type`, `final type`) %>% 
+  ggplot(aes(axis1=`original type`,
+             axis2=`final type`,
+             y= n)) +
+  geom_alluvium(aes(fill = `final type`), show.legend=F) +
+  geom_stratum() +
+  geom_text(stat = "stratum",
+            aes(label = after_stat(stratum))) +
+  scale_x_discrete(limits = c("original type", "`final type`"),
+                   expand = c(0.15, 0.05)) +
+  theme_void()
+
+ggsave(plot=plot_classification,
+       filename='~/Trevino/plot_classification.pdf', 
+       device='pdf',height = 10, width =10 , units = "in" )  
+
+
+
+```
+
+# Pseudotime distribution across cell types
+
+```{r}
+
+
+pseudotime_statistics_bygroups <- metadata %>% 
+  select(`final type` , velocity_pseudotime) %>% 
+  group_by(`final type`) %>%
+  filter(`final type`!='NA') %>% 
+  summarise(median=median(velocity_pseudotime, na.rm=T),
+            mean=mean(velocity_pseudotime, na.rm=T),
+            min=min(velocity_pseudotime, na.rm=T)) %>% 
+  arrange(min)
+
+pseudotime_statistics_bygroups%>% 
+  mutate(across(c(median, mean), ~ rank(.))) %>%
+  write_csv('~/Trevino/pseudotime_statistics_bygroups')
+  print(n=Inf)
+  
+   
+pseudotime_order_bygroups <- pseudotime_statistics_bygroups %>% 
+pull(`final type`)
+
+plot_pseudotime_all <- metadata %>% 
+  select(`final type`, `was reannot`, velocity_pseudotime) %>% 
+  mutate(`final type`= factor(`final type`,
+                              levels=pseudotime_order_bygroups)) %>% 
+  filter(`final type`!='NA') %>% 
+  ggplot(aes(x=`final type`, y=velocity_pseudotime)) + 
+  geom_violin(aes(fill=`final type`),)+
+  geom_point(aes(color=`final type`),
+             size=0.1,
+             alpha = 0.3, 
+             position=position_jitter(height=0, width=.4))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  guides(color = 'none', fill='none')+
+  coord_cartesian(ylim = c(0, 1))
+  
+  
+
+ggsave(plot_pseudotime_all,
+       filename='~/Trevino/pseusotime_groups_plot.pdf',
+       device = "pdf",
+       height = 6, width =6 , units = "in")
+```
+
+# Check if data is pre-filtered
+
+Using count data, I'm going to plot the distribution of:
+
+-   How many genes are expressed in every cell. (To determine if they've previously filtered cells that don't have a minimum number of expressed genes)
+
+-   How many cells express every gene. (To determine if they've previously filtered genes that are not expressed in a minimum number of cells)
+
+```{r}
+
+cell_expression_distribution <- rowSums(count_data != 0)
+gene_expression_distribution <- colSums(count_data != 0)
+
+values <- c(cell_expression_distribution, gene_expression_distribution)
+
+
+plot_dataset <- data.frame(values=values,
+                           class=c(rep('n_genes_expressed',
+                                       length(cell_expression_distribution)),
+                                   rep('expressed_in_n_cells',
+                                       length(gene_expression_distribution))
+                                   )
+                           )
+# Print the dataframe with the count
+
+plot_filter_analysis <- plot_dataset %>% 
+  ggplot(aes(x=class, y=values))+
+  geom_violin(aes(fill=class))+
+  geom_point(aes(color=class),
+             size=1,
+             alpha = 0.05,
+             position=position_jitter(height=0, width=.4))+
+  theme_bw()+
+  theme(axis.text.x = element_blank())+
+  guides(color = 'none', fill='none')+
+  facet_wrap(~class,scales = 'free')
+
+ggsave(plot_filter_analysis,
+       filename='~/Trevino/plot_filter_analysis.pdf',
+       device = "pdf",
+       height = 6, width =6 , units = "in")
+
+
+```
+
+# ver el desarrollo del pseudotime a lo largo de los diferentes grupos
+
+```{r}
+library(RColorBrewer)
+UMAP_velocity_plot <- metadata %>% 
+  ggplot(aes(x=UMAP_0, y=UMAP_1, color=velocity_pseudotime))+
+  geom_point(size=1)+
+  theme_bw()+
+  theme(aspect.ratio=1)+
+  scale_color_distiller(palette = 'Blues',  trans = "reverse")+
+  labs(color='Pseudotime')
+
+ggsave(UMAP_velocity_plot,
+       filename='~/Trevino/plot_umap_velocity.pdf',
+       device = "pdf",
+       height = 6, width =7 , units = "in")
+
+UMAP_types_plot <- metadata %>% 
+  ggplot(aes(x=UMAP_0, y=UMAP_1, color=`final type`))+
+  geom_point(size=1)+
+  theme_bw()+
+  theme(aspect.ratio=1)+
+  labs(color='Pseudotime')
+
+ggsave(UMAP_types_plot,
+       filename='~/Trevino/plot_umap_types.pdf',
+       device = "pdf",
+       height = 6, width =7 , units = "in")
+```
+
+# UpSet pero teniendo en cuenta el orden de los tipos celulares según el pseudotime
+
+```{r}
+generate_combinations_dataset <- function(original_dataset) {
+  
+  # Function to generate all possible combinations
+  generate_combinations <- function(elements) {
+    all_combinations <- unlist(lapply(1:length(elements), function(x) combn(elements, x, simplify = FALSE)), recursive = FALSE)
+    all_combinations <- lapply(all_combinations, sort)
+    all_combinations <- unique(all_combinations)
+    all_combinations
+  }
+  
+  # Function to check if a row has all elements in a combination
+  check_combination <- function(row_elements, combination) {
+    all(combination %in% row_elements)
+  }
+  
+  # Extract elements
+  elements <- unlist(original_dataset$List)
+  
+  # Generate all possible combinations
+  all_combinations <- generate_combinations(elements)
+  
+  # Create new dataset
+  new_dataset <- original_dataset %>%
+    mutate(across(all_combinations, ~map_int(.x, ~check_combination(elements, .))))
+  
+  return(new_dataset)
+}
+
+# Example usage:
+original_dataset <- tibble(
+  ID = c(1, 2, 3),
+  List = list(c("A", "B"), c("B", "C"), c("A", "B", "C"))
+)
+
+result_dataset <- generate_combinations_dataset(original_dataset)
+print(result_dataset)
+
+```
+
+# Co-binding evolution plot
+
+```{r}
+Co_binding <- upset_imput_grouped_by_type %>% 
+  ungroup() %>% 
+  mutate(decile = ntile(velocity_pseudotime, 100)) %>% 
+  group_by(decile,families) %>% 
+  summarise(n=n()) %>% 
+  group_by(decile) %>% 
+  mutate(percent=(n/sum(n))) %>% 
+  mutate(families=stringi::stri_replace_all_regex(families,
+                                                  pattern=c(', ','HES','NEUROD',
+                                                          'NEUROG', 'ID_prot','TCF'),
+                                                  replacement=c('+','H','ND',
+                                                                'NG','ID','TCF'),
+                                                  vectorize=FALSE))
+
+
+
+for(group in c('H','ND','NG','ID','TCF')){
+co_binfing_plot <- Co_binding %>%
+  mutate(families=factor(families, levels= Co_binding %>% 
+                                              arrange(str_length(families))%>% 
+                                              pull(families) %>% 
+                                              unique()
+                         ) 
+         ) %>% 
+  ggplot(aes(x=decile,y=percent, color=families))+
+    geom_line()+
+    # ggrepel::geom_label_repel(aes(label = families, color=families),
+    #              data = Co_binding %>% filter(decile == 100) %>%
+    #                filter(grepl('H',families)),
+    #              nudge_x = 0.35,
+    #              max.overlaps=Inf,
+    #              show.legend = FALSE,
+    #              fill= alpha("white", 0.7))+
+  gghighlight::gghighlight(grepl(group,families),
+              use_direct_label=FALSE)+
+    facet_wrap(~families)+
+    # geom_line(data= Co_binding, aes(group=families),color='gray90')+
+    theme_classic()+
+  guides(fill="none", color="none")+
+  coord_cartesian(expand = F)+
+  theme(plot.margin = margin(0.5,0.5,0.5,0.5, "cm"))
+  
+
+  ggsave(plot = co_binfing_plot,
+         filename =str_c("/users/genomics/josema/Trevino/co_binfing_plot", group, ".pdf"),
+         device = "pdf",
+         height = 6, width =6 , units = "in")
+}
+```
+
+```{r}
+Co_binding_reanalysis <- upset_imput_grouped_by_type %>% 
+  ungroup() %>% 
+  mutate(decile = ntile(velocity_pseudotime, 100)) %>%
+  group_by(decile,families) %>% 
+  summarise(n=n()) %>% 
+  group_by(families) %>% 
+  mutate(percent=(n/sum(n))) %>% 
+  mutate(families=stringi::stri_replace_all_regex(families,
+                                                  pattern=c(', ','HES','NEUROD',
+                                                          'NEUROG', 'ID_prot','TCF'),
+                                                  replacement=c('+','H','ND',
+                                                                'NG','ID','TCF'),
+                                                  vectorize=FALSE))
+
+
+
+for(group in c('H','ND','NG','ID','TCF')){
+co_binfing_plot <- Co_binding_reanalysis %>%
+  mutate(families=factor(families, levels= Co_binding_reanalysis %>% 
+                                              arrange(str_length(families))%>% 
+                                              pull(families) %>% 
+                                              unique()
+                         ) 
+         ) %>% 
+  filter(grepl(group,families)) %>% 
+  ggplot(aes(x=decile,y=percent, color=families))+
+    geom_col()+
+    facet_wrap(~families, scales = 'free_y')+
+    # geom_line(data= Co_binding, aes(group=families),color='gray90')+
+  theme_void()+
+  guides(fill="none", color="none")+
+  coord_cartesian(expand = F)+
+  theme(plot.margin = margin(0.5,0.5,0.5,0.5, "cm"))
+  
+
+  ggsave(plot = co_binfing_plot,
+         filename =str_c("/users/genomics/josema/Trevino/co_binding_plot_2", group, ".pdf"),
+         device = "pdf",
+         height = 6, width =6 , units = "in")
+}
+```
+
+```{r}
+generate_combinations <- function(input_list) {
+  output <- list()
+  n <- length(input_list)
+  
+  # Include individual elements
+  output <- append(output, input_list)
+  
+  # Include combinations of elements
+  for (i in 2:n) {
+    combs <- combn(input_list, i, simplify = FALSE)
+    output <- append(output, combs)
+  }
+  
+  return(output)
+}
+
+# Example usage
+input_list <- c('A', 'B', 'C')
+combinations <- generate_combinations(input_list)
+print(combinations)
+```
+
+```{r}
+library(tidyverse)
+
+generate_combinations_dataset <- function(original_dataset) {
+  # Function to generate all possible combinations
+  generate_combinations <- function(elements) {
+    all_combinations <- unlist(lapply(1:length(elements), function(x) combn(elements, x, simplify = FALSE)), recursive = FALSE)
+    all_combinations <- lapply(all_combinations, sort)
+    all_combinations <- unique(all_combinations)
+    all_combinations
+  }
+  
+  # Function to check if a row has all elements in a combination
+  check_combination <- function(row_elements, combination) {
+    all(combination %in% row_elements)
+  }
+  
+  # Extract elements
+  elements <- original_dataset$List
+  
+  # Generate all possible combinations
+  all_combinations <- generate_combinations(unlist(elements))
+  
+  # Create new dataset
+  new_dataset <- original_dataset %>%
+    mutate(across(all_combinations, ~map_int(.x, ~check_combination(elements, .))))
+  
+  return(new_dataset)
+}
+
+# Example usage:
+original_dataset <- tibble(
+  ID = c(1, 2, 3),
+  List = list(c("A", "B"), c("B", "C"), c("A", "B", "C"))
+)
+
+result_dataset <- generate_combinations_dataset(original_dataset)
+print(result_dataset)
+
+```
+
+```{r}
+library(tidyverse)
+
+create_combinations_dataset <- function(data) {
+  # Function to generate combinations
+  generate_combinations <- function(elements) {
+    all_combinations <- unlist(lapply(1:length(elements), function(x) combn(elements, x, simplify = FALSE)), recursive = FALSE)
+    all_combinations <- lapply(all_combinations, sort)
+    all_combinations <- unique(all_combinations)
+    all_combinations
+  }
+  
+  # Function to check if a row has all elements in a combination
+  check_combination <- function(row_elements, combination) {
+    all(combination %in% row_elements)
+  }
+  
+  # Generate all possible combinations
+  all_combinations <- data %>% 
+    pull(List) %>% 
+    unlist() %>% 
+    unique() %>% 
+    generate_combinations()
+  
+  # Create new dataset
+  new_dataset <- data %>% 
+    mutate(across(all_combinations, ~map_int(.x, ~check_combination(List, .))))
+  
+  return(new_dataset)
+}
+
+# Sample data
+input_data <- tibble(
+  ID = c(1, 2, 3),
+  List = list(c("A", "B"), c("B", "C"), c("A", "B", "C"))
+)
+
+# Generate new dataset
+output_data <- create_combinations_dataset(input_data)
+
+# Print the output dataset
+print(output_data)
+```
+
+# Tabla transformada en local
+
+```{r}
+#Excribimos una tabla en tsv para poder leerla en python y hacer el análsis en python
+
+upset_imput_grouped_by_type %>% 
+  ungroup() %>% 
+  select(ID, families) %>% 
+  write_tsv('/users/genomics/josema/upset_imput_grouped_by_type.tsv')
+```
+
+```{python}
+# load the packages
+import pandas as pd
+from itertools import combinations
+
+# create a function that creates all the combinations in a table
+def create_combinations_dataset(data, sep):
+    # Convert the string of elements into a list
+    data['families'] = data['families'].str.split(sep)
+    
+    # Get unique elements
+    unique_elements = set().union(*data['families'])
+    
+    # Generate all possible combinations
+    all_combinations = ['+'.join(comb) for i in range(len(unique_elements)+1) for comb in combinations(unique_elements, i) if comb]
+    
+    # Create a new DataFrame
+    new_data = pd.DataFrame()
+    new_data['ID'] = data['ID']
+    
+    # Fill new DataFrame with 0 or 1 based on combinations
+    for comb in all_combinations:
+        new_data[comb] = data['families'].apply(lambda x: int(all(elem in x for elem in comb.split('+'))))
+    
+    return new_data
+
+# Sample data
+input_data = pd.read_table('/users/genomics/josema/upset_imput_grouped_by_type.tsv')
+
+# Generate new dataset
+output_data = create_combinations_dataset(input_data, sep=', ')
+
+# Print the output dataset
+output_data.to_csv('/users/genomics/josema/prueba.tsv', sep='\t')
+
+```
+
+# volvemos a R
+
+```{r}
+# cargamos la tabla que he creado en 
+recursive_data <- read.delim('/users/genomics/josema/prueba.tsv', header=T, row.names = 1) %>%  as.tibble()
+
+# upset_imput_grouped_by_type <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_grouped_by_type.RDS') 
+#   
+# upset_imput_grouped_by_type$families <- sapply(upset_imput_grouped_by_type$families[!!lengths(upset_imput_grouped_by_type$families)], toString)
+
+metadata %>% select(Cell.ID,velocity_pseudotime,`final type`)
+  
+```
+
+# 

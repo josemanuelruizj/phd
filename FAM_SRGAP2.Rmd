@@ -1,0 +1,1066 @@
+---
+title: "FAM_SRGAP2"
+output: html_document
+date: "2024-04-10"
+---
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(readr)
+library(readxl)
+
+#library(SeuratDisk)
+```
+
+# Mouse
+
+## Analysis Noakk 2022 dataset
+
+```{r}
+# Load the data
+expression<-readRDS("~/Downloads/merged_scRNA_unfiltered_IDs_faye.RDS")
+```
+
+```{r}
+# create the metadata
+
+#para la expresion, cargo el data. aunq tambien esta el scaled.data. no se 100% bien cual de los dos deberia cargar. no se por que han escalado los datos
+
+expression_matrix<-expression@assays$RNA@data
+metadata<-expression@meta.data
+metadata$celltype<-Idents(expression)
+#mezclar las mitoticas con las no mitoticas.
+metadata$celltype<-gsub("_M","",metadata$celltype)
+metadata<-metadata %>% filter(!is.na(pseudotime))
+table(metadata$celltype)/175
+#hacer pseudobulks de 175 celulas. pq es lo mas justo para hacer 2 pseudobulks en pn3
+
+#hacer los heatmaps con esto. y luego ponerle los picos, su trayectoria, motivos, y spacing. y
+j<-1
+for (cell in c("NSC","IPC","PN1","PN2","PN3")) {
+  print(cell)
+  metadata_cell<-metadata %>% filter(celltype==cell)
+  metadata_cell<-metadata_cell %>% arrange(pseudotime)
+  i<-1
+  while ((i+175)<=length(metadata_cell$pseudotime)) {
+    pseudobulk_cells<-rownames(metadata_cell)[i:(i+174)]
+    pseudobulk_expression<-rowSums(as.matrix(expression_matrix[,pseudobulk_cells]))
+    if (j==1) { pseudo_expression<-pseudobulk_expression}
+    if (j>1) { pseudo_expression<-cbind(pseudo_expression,pseudobulk_expression)}
+    i<-i+175
+    j<-j+1
+  }
+}
+colnames(pseudo_expression)
+colnames(pseudo_expression)<-c(,paste0("IPC_",1:8),paste0("PN1_",1:9),paste0("PN2_",1:8),paste0("PN3_",1:2))
+```
+
+```{r}
+z_score <- pseudo_expression %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Symbol') %>%
+  pivot_longer(-Symbol, names_to = 'Cell_type', values_to = 'expression') %>% 
+  group_by(Symbol) %>% 
+  mutate(Zscore=(expression - mean(expression))/sd(expression)) %>%
+  ungroup() %>% 
+  mutate(Group=gsub('\\_.*','',Cell_type),
+         Group=factor(Group, levels=c('NSC','IPC','PN1','PN2','PN3')),
+         Pseudotime=gsub('.*\\_','',Cell_type),
+         Pseudotime= factor(Pseudotime, levels = as.character(1:12)),
+         Symbol=toupper(Symbol))
+```
+
+```{r, fig.width=6, fig.height=1.8}
+
+plot_srgap<- z_score %>% 
+  filter(grepl('^FAM72|SRGAP2.*',Symbol)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=Pseudotime, y=Symbol, fill= expression))+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e') +
+  geom_tile()+
+  facet_grid(~Group, scales  = 'free', space = 'free')+
+  theme_bw()+
+  theme(legend.position = 'bottom',
+        strip.placement = "outside", 
+        strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x=element_blank())
+```
+
+```{r}
+heatmap_raw <-  heatmap_imput %>%
+  ungroup() %>% 
+  ggplot(aes(x=Pseudotime, y=Symbol, fill= expression))+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e') +
+  geom_tile()+
+  #coord_equal()+
+  facet_grid(Gene_family~Group, scales  = 'free', space = 'free', switch = 'y')+
+  theme_bw()+
+  theme(legend.position = 'bottom',
+        strip.placement = "outside")+
+  theme(strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_rect(color = 'gray50',
+                                        fill=NA),
+        strip.text.y.left = element_text(angle = 0,
+                                          hjust = 1,
+                                          face = 'bold',
+                                          color = 'gray30'),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())
+
+```
+
+## Analysis La Manno's brain atlas
+
+```{r}
+Manno_mouse <- readRDS('/projects_ng/SC_DATA/Manno2021/mdev_seu_0503_2021.rds')
+Manno_mouse <- UpdateSeuratObject(Manno_mouse)
+```
+
+```{r}
+Manno_metadata <-  Manno_mouse@meta.data
+Manno_RNA <- Manno_mouse[["RNA"]]$data %>% as.matrix()
+```
+
+```{r}
+Manno_RNA %>% rownames() %>%  grep('Fam72|Srgap2',., value=TRUE)
+
+Manno_RNA_FAM_SRGAP<- Manno_RNA[c("Fam72a","Srgap2"),] %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Cell_ID')
+
+Manno_RNA_FAM_SRGAP_merged <- Manno_metadata %>% 
+  select(IsCycling,Age,Class,Subclass, PseudoTissue) %>% 
+  rownames_to_column('Cell_ID') %>% 
+  inner_join(Manno_RNA_FAM_SRGAP, by='Cell_ID')
+```
+
+```{r}
+Plot_dotplot_FAM_SRGAP_by_class <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  group_by(Class, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  ungroup() %>% 
+  arrange(Gene,desc(Avg)) %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  ggplot()+
+  geom_point(aes(y=Class, x=Gene, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e') 
+
+
+ggsave(Plot_dotplot_FAM_SRGAP_by_class,
+       filename='~/Plot_dotplot_FAM_SRGAP_by_class.pdf',
+       device = "pdf",
+       height = 6, width =4 , units = "in")
+```
+
+```{r}
+Plot_dotplot_FAM_SRGAP_by_class_pseudotissue <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  group_by(Class, PseudoTissue, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  ggplot()+
+  geom_point(aes(y=Class, x=Gene, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(~PseudoTissue)+
+  theme(strip.text.x = element_text(angle=45, vjust = 0, hjust = 0),
+        axis.text.x = element_text( angle = 45,vjust=1,hjust = 1))
+
+
+
+
+ggsave(Plot_dotplot_FAM_SRGAP_by_class_pseudotissue,
+       filename='~/Plot_dotplot_FAM_SRGAP_by_class_pseudotissue.pdf',
+       device = "pdf",
+       height = 6, width =8 , units = "in")
+```
+
+Ahora vamos a comparar las expresión en los distintos patterning centers. Para elegir los patterning centers he buscado los valores más similares en subgroup a los nombres que determinan en el paper como centros de regulación.
+
+En contrando: - Similar a Hem: Cortical hem - Similar a ZLI: Nna limitans intrathalamica - Similar a Floor plate: Floor plate, Midbrain floor plate, Hindbrain floor plate, Hypothalamic floor-plate like - Similar a Roof plate: Roof plate, Midbrain roof plate, Hindbrain roof plate, diencephalic roof plate
+
+No he encontrado ningún valor similar a Anti hem ni al otro Patterning center.
+
+```{r}
+Patterning_centers <- c('Cortical hem',
+                        
+                        'Zona limitans intrathalamica',
+                        
+                        'Anteromedial cerebral pole',
+                        
+                        'Floor plate',
+                        'Midbrain floor plate',
+                        'Hindbrain floor plate',
+                        'Hypothalamic floor-plate like',
+                        
+                        
+                        'Roof plate',
+                        'Hindbrain roof plate',
+                        'Diencephalic roof plate',
+                        'Fourth-ventricle roof plate')
+
+
+Manno_RNA_FAM_SRGAP_merged %>% 
+  filter(Subclass %in% Patterning_centers) %>% 
+  count(Subclass, Class)
+  
+plot_patterningCenters_FAM <- Manno_RNA_FAM_SRGAP_merged %>% 
+  filter(Subclass %in% Patterning_centers) %>%
+  mutate(Subclass=factor(Subclass, levels=Patterning_centers)) %>% 
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  group_by(Subclass, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  ggplot()+
+  geom_point(aes(y=Subclass, x=Gene, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme(strip.text.x = element_text(angle=45, vjust = 0, hjust = 0),
+        axis.text.x = element_text( angle = 45,vjust=1,hjust = 1))+
+  scale_y_discrete(limits=rev)  
+
+ggsave(plot_patterningCenters_FAM,
+       filename='~/plot_patterningCenters_FAM.pdf',
+       device = "pdf",
+       height = 5, width =4 , units = "in")
+
+
+```
+
+Como no hay mucha diferencia, voy a intentar hacer algún análisis que incluya la edad embrionaria de las células.
+
+Por ejemplo, comparar la expresión de los genes en radial glia y en neuronas en diferentes edades embrionarias.
+
+```{r}
+
+age_order=c('e7.0', 'e8.0', 'e8.5', 'e9.0', 'e10.0',
+  'e11.0', 'e12.0', 'e12.5', 'e13.0','e13.5',
+  'e14.0', 'e14.5', 'e15.0','e15.5', 'e16.0',
+  'e16.25','e16.5', 'e17.0', 'e17.5','e18.0')
+
+
+Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  filter(Class%in%c('Neuron', 'Radial glia')) %>% 
+  group_by(Class, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  mutate(Age= factor(Age, levels=age_order),
+         Class=factor(Class, levels=c('Radial glia','Neuron'))) %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(~Class)+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom')
+  
+ggsave(Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene,
+       filename='~/Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene.pdf',
+       device = "pdf",
+       height = 3, width =8, units = "in")  
+
+
+Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  filter(Class%in%c('Neuron', 'Radial glia')) %>% 
+  group_by(Class, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  mutate(Age= factor(Age, levels=age_order),
+         Class=factor(Class, levels=c('Radial glia','Neuron'))) %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(~Class)+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom')
+  
+ggsave(Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene,
+       filename='~/Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene.pdf',
+       device = "pdf",
+       height = 2.2, width =8, units = "in")  
+```
+
+```{r}
+#igual pero normalizando
+
+Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene_normalizado <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  filter(Class%in%c('Neuron', 'Radial glia')) %>% 
+  group_by(Class, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  mutate(Age= factor(Age, levels=age_order),
+         Class=factor(Class, levels=c('Radial glia','Neuron'))) %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, color=normalized_value))+
+  theme_classic()+
+  scale_color_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(~Class)+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom')
+  
+ggsave(Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene_normalizado,
+       filename='~/Plot_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene_normalizado.pdf',
+       device = "pdf",
+       height = 2.2, width =8, units = "in")  
+```
+
+```{r}
+Plot_dotplot_FAM_SRGAP_RG_Neurons_Pseudotissue_Age_Gene <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  filter(Class%in%c('Neuron', 'Radial glia')) %>% 
+  group_by(Class, PseudoTissue, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  mutate(Age= factor(Age, levels=age_order),
+         Class=factor(Class, levels=c('Radial glia','Neuron'))) %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(PseudoTissue~Class, switch = 'y')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_rect(color = 'gray50',
+                                        fill=NA),
+        strip.text.y.left = element_text(angle = 0,
+                                          hjust = 1,
+                                          face = 'bold',
+                                          color = 'gray30'),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())
+  
+  
+ggsave(Plot_dotplot_FAM_SRGAP_RG_Neurons_Pseudotissue_Age_Gene,
+       filename='~/Plot_dotplot_FAM_SRGAP_RG_Neurons_Pseudotissue_Age_Gene.pdf',
+       device = "pdf",
+       height = 6, width =9, units = "in")  
+```
+
+```{r}
+# igual pero ahora normalizado
+Plot_dotplot_FAM_SRGAP_RG_Neurons_Pseudotissue_Age_Gene_normalized <- Manno_RNA_FAM_SRGAP_merged %>%
+  pivot_longer(c(Fam72a, Srgap2), names_to = 'Gene', values_to = 'Expression') %>%  
+  filter(Class%in%c('Neuron', 'Radial glia')) %>% 
+  group_by(Class, PseudoTissue, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene,PseudoTissue) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  mutate(Age= factor(Age, levels=age_order),
+         Class=factor(Class, levels=c('Radial glia','Neuron'))) %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(PseudoTissue~Class, switch = 'y')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_rect(color = 'gray50',
+                                        fill=NA),
+        strip.text.y.left = element_text(angle = 0,
+                                          hjust = 1,
+                                          face = 'bold',
+                                          color = 'gray30'),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())
+  
+  
+ggsave(Plot_dotplot_FAM_SRGAP_RG_Neurons_Pseudotissue_Age_Gene_normalized,
+       filename='~/Plot_dotplot_FAM_SRGAP_RG_Neurons_Pseudotissue_Age_Gene_normalized.pdf',
+       device = "pdf",
+       height = 6, width =9, units = "in")  
+```
+
+
+# Human
+
+## Braun 2023
+
+```{r}
+gene_metadata <- read_csv('datasets/human_files/var.csv', col_names = F, ) 
+
+cell_metadata <- read_csv('datasets/human_files/obs.csv')
+# gene_expression_matrix <-  read_csv('datasets/human_files/X.csv')
+```
+
+
+```{r}
+neuron_metadata <-  cell_metadata %>% filter(grepl('Neuron',CellClass) ) %>%
+  as.data.frame()
+rownames(neuron_metadata) <-   gsub("b\\'|\\'",'',neuron_metadata$CellID)
+
+neuron_counts <-read_csv('datasets/human_files/NEURON_counts.csv', 
+                          col_names = F) %>%
+                as.matrix()
+
+colnames(neuron_counts) <-  gene_metadata$Accession
+rownames(neuron_counts) <-  gsub("b\\'|\\'",'',neuron_metadata$CellID)
+
+data_neuron<- CreateSeuratObject(counts=t(as.matrix(neuron_counts)), # transpose of the count matrix because we need to set the cell names as columns
+                          meta.data=neuron_metadata)
+data_neuron <-  NormalizeData(data_neuron)
+
+saveRDS(data_neuron, 'datasets/human_files/Neuron_subset.RDS')
+
+
+```
+
+
+```{r} 
+glia_metadata <-  cell_metadata %>% filter(grepl('Radial glia',CellClass) ) %>%
+  as.data.frame()
+
+rownames(glia_metadata) <-   gsub("b\\'|\\'",'',glia_metadata$CellID)
+
+glia_counts <-read_csv('datasets/human_files/RG_counts.csv', 
+                          col_names = F) %>%
+                as.matrix()
+
+colnames(glia_counts) <-  gene_metadata$Accession
+rownames(glia_counts) <-  gsub("b\\'|\\'",'',glia_metadata$CellID)
+
+data_glia<- CreateSeuratObject(counts=t(as.matrix(glia_counts)), # transpose of the count matrix because we need to set the cell names as columns
+                          meta.data=glia_metadata)
+data_glia <- NormalizeData(data_glia)
+
+saveRDS(data_glia, 'datasets/human_files/RG_subset.RDS')
+```
+
+### Data processiong
+
+```{r}
+gene_metadata <- read_csv('datasets/human_files/var.csv')
+cell_metadata <- read_csv('datasets/human_files/obs.csv')
+data_glia <-  readRDS('datasets/human_files/RG_subset.RDS')
+data_neuron <-  readRDS('datasets/human_files/Neuron_subset.RDS')
+```
+
+```{r}
+accessions_FAM_SRGAP <- gene_metadata %>% 
+  filter(grepl('FAM72|SRGAP2',Gene), 
+         !grepl('AS',Gene)) %>% 
+  select(Accession, Gene)
+
+FAM_SRGAP_neuron<- FetchData(data_neuron, vars=accessions_FAM_SRGAP$Accession, layer='data')
+FAM_SRGAP_glia<- FetchData(data_glia, vars=accessions_FAM_SRGAP$Accession, layer='data')
+
+Neuron_glia_FAM_SRGAP <-  rbind(FAM_SRGAP_glia,FAM_SRGAP_neuron) %>% 
+  rownames_to_column('CellID') %>% 
+  as_tibble() 
+  
+
+cell_metadata <- cell_metadata %>% 
+  mutate_all(~gsub("b\\'|\\'", '', .))
+
+
+samples_metadata <- read_excel('datasets/human_files/table_S1.xlsx') 
+
+merged_dataset <- Neuron_glia_FAM_SRGAP %>% 
+  pivot_longer(-CellID, names_to = 'Accession', values_to = 'Expression') %>%
+  inner_join(accessions_FAM_SRGAP, by = 'Accession') %>% 
+  inner_join(select(cell_metadata, c(CellID, CellClass, Region, sample_id)), by='CellID') %>% 
+  inner_join(select(samples_metadata, c(Sample_ID, Week, Dissected_region)), 
+             by=c('sample_id'='Sample_ID'), relationship = "many-to-many") %>% 
+  mutate(CellClass= factor(CellClass, levels=c('Radial glia', 'Neuronal IPC','Neuron')))
+
+
+clusters_of_genes <- data.frame(Gene=c('FAM72A','FAM72B','FAM72C','FAM72D',
+                                       'SRGAP2','SRGAP2B','SRGAP2C','SRGAP2D'),
+                                Cluster=factor(c(1,4,3,2,
+                                                 1,2,4,3),
+                                               levels=(1:4)))
+```
+
+```{r}
+plot_Braun <- merged_dataset %>% 
+  group_by(CellClass, Gene, Week) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Week, size=Percent, fill=Avg),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e') +
+  facet_grid(Cluster~CellClass, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+ggsave(plot_Braun,
+       filename='FAM_SRGAP/plots/Braun2023/plot_Braun.pdf',
+       device = "pdf",
+       height = 3.5, width =6.5, units = "in")  
+```
+
+
+```{r}
+plot_normalized_Braun <- merged_dataset %>% 
+  group_by(CellClass, Gene, Week) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=Week, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Cluster~CellClass, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+ggsave(plot_normalized_Braun,
+       filename='FAM_SRGAP/plots/Braun2023/plot_normalized_Braun.pdf',
+       device = "pdf",
+       height = 3.5, width =6.5, units = "in")  
+```
+
+```{r}
+plot_overview_normalized_Braun <- merged_dataset %>% 
+  group_by(CellClass, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=CellClass, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Cluster~CellClass, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.text.x.bottom = element_blank(),
+        axis.ticks.x=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+ggsave(plot_overview_normalized_Braun,
+       filename='FAM_SRGAP/plots/Braun2023/plot_overview_normalized_Braun.pdf',
+       device = "pdf",
+       height = 3, width =4, units = "in")  
+```
+
+
+```{r}
+plot_overview_Braun <- merged_dataset %>% 
+  group_by(CellClass, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=CellClass, size=Percent, fill=Avg),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e') +
+  facet_grid(Cluster~CellClass, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.text.x.bottom = element_blank(),
+        axis.ticks.x=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+ggsave(plot_overview_Braun,
+       filename='FAM_SRGAP/plots/Braun2023/plot_overview_Braun.pdf',
+       device = "pdf",
+       height = 3, width =4, units = "in")  
+```
+
+division by tissues
+
+```{r}
+division_by_region <- merged_dataset %>% 
+  group_by(CellClass, Gene, Region) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene, Region) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=CellClass, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Region+Cluster~CellClass, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.text.x.bottom = element_blank(),
+        axis.ticks.x=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+ggsave(division_by_region,
+       filename='FAM_SRGAP/plots/Braun2023/division_by_region.pdf',
+       device = "pdf",
+       height = 15, width =4, units = "in")  
+  
+```
+
+## EZE 2021
+
+```{r}
+cell_metadata <- read_tsv('/users/genomics/josema/datasets/eze_2021/meta.tsv')
+gene_expression_matrix <-  read_tsv('/users/genomics/josema/datasets/eze_2021/exprMatrix.tsv')
+```
+
+```{r}
+FAM_SRGAP_expression <- gene_expression_matrix %>% 
+  filter(grepl('FAM72|SRGAP2', gene)) %>% 
+  t() %>%
+  as.data.frame() %>%
+  janitor::row_to_names(1)
+```
+
+```{r}
+library(readxl)
+cortex_metadata <- read_excel("/users/genomics/josema/datasets/ugomma_2021//41593_2020_794_MOESM3_ESM.xlsx", 
+    sheet = "5 Cortex Annotations") %>% 
+  rename(Cell=`...1`)
+
+cortex_metadata %>% distinct(`Cell Type`) 
+```
+
+```{r}
+Pivoted_expression <- FAM_SRGAP_expression %>%  
+  rownames_to_column('Cell') %>% 
+  pivot_longer(-Cell, names_to = 'Gene', values_to = 'Expression')
+
+Pivoted_expression_merged <- Pivoted_expression %>%  inner_join(cortex_metadata %>%
+                                     select(Cell,Age,`Cell Type`, Area),
+                                   by= 'Cell')
+```
+
+```{r}
+# Age represents distinct Carnegie Stages
+Pivoted_expression_merged_filtered <- Pivoted_expression_merged %>% 
+  filter(`Cell Type` %in% c('Neuroepithelial', 'Radial Glial', 'IPC', 'Neuronal')) %>% 
+  mutate(Age = factor(Age, levels=c('1','12','13','14','15','19','20','22')),
+         `Cell Type`= factor(`Cell Type`,
+                           levels= c('Neuroepithelial', 'Radial Glial', 'IPC', 'Neuronal')),
+         Expression= as.numeric(Expression)) %>% 
+  rename(Cell_Type = `Cell Type`)
+
+```
+
+```{r}
+clusters_of_genes <- data.frame(Gene=c('FAM72A','FAM72B','FAM72C','FAM72D',
+                                       'SRGAP2','SRGAP2B','SRGAP2C','SRGAP2D'),
+                                Cluster=factor(c(1,4,3,2,
+                                                 1,2,4,3),
+                                               levels=(1:4)))
+
+Pivoted_expression_merged_filtered <- inner_join(Pivoted_expression_merged_filtered,
+                                                 clusters_of_genes, by='Gene')
+```
+
+```{r}
+
+dotplot_FAM_SRGAP_RG_Neurons_Age_Gene <- Pivoted_expression_merged_filtered %>% 
+  group_by(Cell_Type, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+   ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, fill=Avg),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(Cluster~Cell_Type, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5)) 
+
+
+ggsave(dotplot_FAM_SRGAP_RG_Neurons_Age_Gene,
+       filename='~/FAM_SRGAP/plots/ugomma2021/dotplot_FAM_SRGAP_RG_Neurons_Age_Gene.pdf',
+       device = "pdf",
+       height = 3.5, width =6, units = "in") 
+```
+
+```{r}
+# plot sin tener en cuenta la distribución por áreas NORMALIZADO
+
+Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene_normalized <- Pivoted_expression_merged_filtered %>% 
+  filter(Cell_Type %in% c('Radial Glial', 'Neuronal')) %>% 
+  group_by(Cell_Type, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+   ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Cluster~Cell_Type, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(nrow=2, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5)) 
+
+ggsave(Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene_normalized,
+       filename='~/Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Age_Gene_normalized.pdf',
+       device = "pdf",
+       height = 3.5, width =4.5, units = "in")  
+```
+
+```{r}
+# plot teniendo en cuenta la distribución por áreas
+
+
+Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Area_Age_Gene_normalized <- Pivoted_expression_merged_filtered %>% 
+  group_by(Cell_Type, Area, Age, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene,Area) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+   ggplot()+
+  geom_point(aes(y=Gene, x=Age, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Area~Cell_Type, switch = 'y')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_rect(color = 'gray50',
+                                        fill=NA),
+        strip.text.y.left = element_text(angle = 0,
+                                          hjust = 1,
+                                          face = 'bold',
+                                          color = 'gray30'),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())
+
+ggsave(Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Area_Age_Gene_normalized,
+       filename='~/Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Area_Age_Gene_normalized.pdf',
+       device = "pdf",
+       height = 6, width =9, units = "in")  
+```
+
+```{r}
+#Calcular la correlación entre los diferentes genes
+library(corrplot)
+
+pdf(file = "~/FAM_SRGAP/plots/ugomma2021/Corr_plot.pdf")
+
+Corr_plot <- Pivoted_expression_merged_filtered %>% 
+  select(Cell, Gene, Expression) %>% 
+  pivot_wider(names_from = Gene, values_from = Expression) %>% 
+  column_to_rownames('Cell') %>% 
+  cor() %>% 
+  corrplot(method = 'square', type = 'lower', diag = FALSE)
+
+dev.off()
+```
+
+```{r}
+# same but withou age discrimination
+
+Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Gene_normalized <- Pivoted_expression_merged_filtered %>% 
+  group_by(Cell_Type, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+   ggplot()+
+  geom_point(aes(y=Gene, x=Cell_Type, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Cluster~Cell_Type, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_blank(),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", la title.hjust = 0.5),
+           fill = guide_colourbar(barheight=0.5,title.position="top", title.hjust = 0.5)) 
+
+ggsave(Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Gene_normalized,
+       filename='~/FAM_SRGAP/plots/ugomma2021/Plot_human_dotplot_FAM_SRGAP_RG_Neurons_Gene_normalized.pdf',
+       device = "pdf",
+       height = 3, width =5, units = "in")  
+```
+
+## Zhu et al
+
+```{r}
+zhu <- readRDS('/projects_ng/SC_DATA/Zhu_BCINN/ZhuSeurat.rds')
+zhu <- NormalizeData(zhu)
+zhu_expression <- zhu@assays$RNA$data %>% as.data.frame()
+```
+
+```{r}
+clusters_of_genes <- data.frame(Gene=c('FAM72A','FAM72B','FAM72C','FAM72D',
+                                       'SRGAP2','SRGAP2B','SRGAP2C','SRGAP2D'),
+                                Cluster=factor(c(1,4,3,2,
+                                                 1,2,4,3),
+                                               levels=(1:4)))
+
+ages <- c('18 gw','19 gw','23 gw', '24 gw')
+
+zhu_expression_filtered <- zhu_expression %>% 
+  rownames_to_column('Genes') %>% 
+  filter(Genes%in%clusters_of_genes$Gene) %>% 
+  column_to_rownames('Genes') %>% 
+  t() %>% 
+  as.data.frame()
+
+zhu_metadata_filtered <- zhu_metadata %>%  
+  filter(age %in% ages) %>% 
+  mutate(age=factor(age, levels= ages)) %>% 
+  select(celltype, age) %>%  
+  rownames_to_column('CellID')
+```
+
+```{r}
+zhu_expression_merged <- zhu_expression_filtered %>% 
+  rownames_to_column('CellID') %>% 
+  pivot_longer(-CellID, names_to = 'Gene', values_to = 'Expression') %>% 
+  inner_join(zhu_metadata_filtered )
+
+cell_subset <-  c('RG','IPC','EN-fetal-early','EN-fetal-late')
+
+zhu_expression_merged_filtered <- zhu_expression_merged %>%  
+  filter(celltype %in% cell_subset) %>% 
+  mutate (celltype=factor(celltype, levels= cell_subset))
+```
+
+```{r}
+zhu_plot <- zhu_expression_merged_filtered %>% 
+   group_by(celltype, Gene, age) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Percent>0) %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_point(aes(y=Gene, x=age, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Cluster~celltype, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+ggsave(zhu_plot,
+       filename='FAM_SRGAP/plots/Braun2023/zhu_plot.pdf',
+       device = "pdf",
+       height = 3.5, width =6.5, units = "in")  
+```
+
+
+```{r}
+zhu_plot <- zhu_expression_merged_filtered %>% 
+   group_by(celltype, Gene, age) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(normalized_value=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  inner_join(clusters_of_genes, by='Gene') %>% 
+  ggplot()+
+  geom_tile(aes())
+  geom_point(aes(y=Gene, x=age, size=Percent, fill=normalized_value),
+             color='gray80',
+             shape=21)+
+  theme_classic()+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  facet_grid(Cluster~celltype, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank())+
+    guides(size=guide_legend(title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+```
+
+# 
+
+```{r}
+library(sceasy)
+
+ad <- import("anndata", convert = FALSE)
+pbmc_ad <- ad$read_h5ad("/Users/abutler/Downloads/pbmc3k.h5ad")
+pbmc3k <- Convert(pbmc_ad, to = "seurat")
+
+path <- '~/datasets/monkey/monkey.h5ad'
+
+use_condaenv('my_env')
+convertFormat(path, from="anndata", to="seurat", outFile='~/datasets/monkey/monkey.rds')
+
+
+remotes::install_github("pmbio/MuDataSeurat")
+```
+

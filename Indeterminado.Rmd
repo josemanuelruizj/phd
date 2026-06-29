@@ -1,0 +1,256 @@
+library(tidyverse)
+library(Seurat)
+library(readr)
+library(ggupset)
+
+####### load de los datos atajos ######
+data<-readRDS('~/Trevino/RDS_files/data.RDS')
+
+upset_imput_grouped_by_type <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_grouped_by_type.RDS')
+upset_imput_filtered <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput_filtered.RDS')
+upset_imput <- readRDS('/users/genomics/josema/Trevino/RDS_files/upset_imput.RDS')
+
+##### read counts and metadata #####
+count_data<- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/counts.tsv')
+count_data<- count_data %>% column_to_rownames(var="...1")
+
+
+metadata <- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/meta_cells.tsv')
+metadata<- metadata %>% column_to_rownames(var="...1")
+
+genes_metadata <- read_tsv('/projects_ng/SC_DATA/Trevino2019/reannotated/meta_genes.tsv')
+genes_metadata<- genes_metadata %>% column_to_rownames(var="...1")
+
+# create seurat object
+data<- CreateSeuratObject(counts=t(as.matrix(count_data)), # transpose of the count matrix because we need to set the cell names as columns
+                          meta.data=metadata)
+
+#Normalize data
+data <- NormalizeData(data,
+                      normalization.method = "LogNormalize",
+                      scale.factor = 1e6)
+#Variable  features
+data <- FindVariableFeatures(data,
+                             nfeatures = 2000)
+top10 <- head(VariableFeatures(data), 10)
+
+
+VariableFeaturePlot(data) %>% #ploteamos las variables
+  LabelPoints(plot = ., points = top10, repel = TRUE) %>% #ponemos los nombres de las variables
+  ggsave(filename = "/users/genomics/josema/Trevino/feature.pdf",
+         device = "pdf",
+         height = 5, width = 6, units = "in")
+
+#Scale data
+data <- ScaleData(data, 
+                  features = rownames(data))
+# PCA
+data <- RunPCA(data,
+               features = VariableFeatures(object = data))
+# Neighbours and clusters
+data <- FindNeighbors(data, dims = 1:30, reduction = "pca")
+data <- FindClusters(data, resolution = 2, cluster.name = "unintegrated_clusters")
+
+dimensions <- as.matrix(data@meta.data[,c("UMAP_0","UMAP_1")])
+colnames(dimensions) <- c("UMAP_1","UMAP_2")
+
+data[['UMAP']] <- CreateDimReducObject(embeddings = dimensions,
+                                       key = "UMAP_",
+                                       global = T,
+                                       assay = "RNA")
+
+
+DimPlot(data, group.by="reannotated type",reduction = "UMAP") %>% 
+  ggsave(filename = "/users/genomics/josema/Trevino/umap.pdf",
+         device = "pdf",
+         height = 5, width = 6, units = "in")
+##### RDS1 #####
+
+plot <- Embeddings(data, reduction='UMAP') %>%
+  cbind(data['reannotated type']) %>% 
+  as.data.frame() %>% 
+  ggplot(., aes(x=UMAP_1, y=UMAP_2, color=reanotated))+
+  geom_point() 
+  
+ggsave(plot,
+       filename = "/users/genomics/josema/Trevino/umap.pdf",
+       device = "pdf",
+       height = 5, width = 6, units = "in")
+
+# Cargar el listado de genes importantes bHLH
+table_bhlh<- read_csv('~/Trevino/factors_classification.csv') 
+bhlh_symbol <- table_bhlh %>% pull(Symbol) #cpgemos la columna de symbols
+
+# Extraer un listado con los niveles de expresión de los genes de bHLH
+dataframe_bHLH <- LayerData(data, assay = "RNA", layer = "data") %>% 
+  as.data.frame() %>%
+  filter(rownames(.)%in%bhlh_symbol) %>% 
+  t() %>% 
+  as.data.frame()
+
+#Comprobar si se han cogido todos los bHLH del listado
+setdiff(bhlh_symbol,
+        dataframe_bHLH %>% colnames())
+# hay 3 bHLH que no están en nuestro conjunto de datos
+
+# Realizar una tabla que me establezca presencia/Ausencia de un gen 
+
+##### UPSET plots ######
+
+upset_imput <-  dataframe_bHLH%>% 
+  rownames_to_column('ID') %>% 
+  rowwise() %>%
+  mutate(bHLHs = list(names(.)[which(c_across(-ID) != 0)])) %>% 
+  select(ID,bHLHs)
+
+reannotated <- data$`reannotated type`%>% 
+  as.data.frame() %>% 
+  magrittr::set_colnames('reannotated') %>% 
+  rownames_to_column('ID')
+
+
+upset_imput <- inner_join(upset_imput,
+                          reannotated,
+                          by='ID') 
+
+library(ggupset)
+
+upset_plot_astro <- upset_imput %>% 
+  filter(reannotated=='Astro') %>% 
+  ggplot(aes(x = bHLHs)) +
+  geom_bar() +
+  scale_x_upset(n_intersections=20)
+
+ggsave(plot = upset_plot_astro,
+         filename = "/users/genomics/josema/Trevino/astro_upset.pdf",
+         device = "pdf",
+         height = 16, width =6 , units = "in")
+
+# filtramos en función de relevancia en neurodesarrollo (Neurog, neurod, hes, id, tcf)
+bhlh_filtered_symbol <- bhlh_symbol %>% grep('NEUROD.*|NEUROG.*|TCF.*|ID.*|HES.*',
+                     .,
+                     value = T) 
+
+upset_imput_filtered <-  dataframe_bHLH%>% 
+  select(bhlh_filtered_symbol) %>% 
+  rownames_to_column('ID') %>% 
+  rowwise() %>%
+  mutate(bHLHs = list(names(.)[which(c_across(-ID) != 0)])) %>% 
+  select(ID,bHLHs)
+  
+upset_imput_filtered <- inner_join(upset_imput_filtered,
+                          reannotated,
+                          by='ID') 
+
+upset_plot_filtered_astro <- upset_imput_filtered %>% 
+  filter(reannotated=='Astro') %>% 
+  ggplot(aes(x = bHLHs)) +
+  geom_bar() +
+  scale_x_upset(n_intersections=137)
+
+ggsave(plot = upset_plot_filtered_astro,
+       filename = "/users/genomics/josema/Trevino/astro_upset.pdf",
+       device = "pdf",
+       height = 6, width =20 , units = "in")
+
+# Upset by groups of TF
+
+
+upset_imput_grouped_by_type<- upset_imput_filtered %>% 
+  mutate(NEUROG=ifelse(any(grepl('NEUROG.*',bHLHs)), 'yes','no'),
+         NEUROD=ifelse(any(grepl('NEUROD.*',bHLHs)), 'yes','no'),
+         TCF=ifelse(any(grepl('TCF.*',bHLHs)), 'yes','no'),
+         ID_prot=ifelse(any(grepl('ID.*',bHLHs)), 'yes','no'),
+         HES=ifelse(any(grepl('HES.*',bHLHs)), 'yes','no')) %>%
+  pivot_longer(cols=-c(ID,bHLHs,reannotated),names_to = 'Genes', values_to = 'Expressed') %>% 
+  filter(Expressed=='yes') %>%
+  group_by(ID,bHLHs,reannotated) %>% 
+  summarize(families=list(Genes))
+  
+reannotation_types <- upset_imput_grouped_by_type %>%
+  filter(reannotated!='NA') %>% 
+  pull(reannotated) %>%
+  unique()
+
+# Hacemos un upset general en el que se vean todos, quitando los NA
+upset_plot_filtered_all <- upset_imput_grouped_by_type %>% 
+  filter(reannotated !='NA') %>% 
+  ggplot(aes(x = families)) +
+  geom_bar(aes(fill=reannotated), position="fill")+
+  scale_x_upset()+
+  theme_classic()+
+  scale_y_continuous(expand = c(0, 0))
+
+
+ggsave(plot = upset_plot_filtered_all,
+       filename ="/users/genomics/josema/Trevino/all_upset.pdf",
+       device = "pdf",
+       height = 6, width =10 , units = "in")
+
+#hacemos un bucle para hacer un upset de cada subtipo celular
+for (type in reannotation_types) {
+  upset_plot_filtered_group <- upset_imput_grouped_by_type %>% 
+    filter(reannotated==type) %>% 
+    ggplot(aes(x = families)) +
+    ggtitle(type)+
+    geom_bar(fill='lightcoral') +
+    scale_x_upset()+
+    theme_classic()+
+    scale_y_continuous(expand = c(0, 0))
+  
+  
+  ggsave(plot = upset_plot_filtered_group,
+         filename =str_c("/users/genomics/josema/Trevino/", type, "_upset.pdf"),
+         device = "pdf",
+         height = 6, width =10 , units = "in")
+}
+
+
+upset_imput_grouped_by_type$families <- sapply(upset_imput_grouped_by_type$families[!!lengths(upset_imput_grouped_by_type$families)], toString)
+
+pseudotime_plot<- upset_imput_grouped_by_type %>% 
+  mutate(pseudotime=plyr::round_any(velocity_pseudotime*10,1,f=floor)) %>% 
+  group_by(families, pseudotime) %>% 
+  summarise(n=n()) %>% 
+  mutate(families=strsplit(families, ',')) %>% 
+  ggplot(aes(y=pseudotime, x=families))+
+  geom_point(aes(size=n))+
+  coord_flip()+
+  ggupset::scale_x_upset()+
+  theme_classic()
+
+ggsave(plot = pseudotime_plot,
+       filename ='~/pseudotime_plot.pdf',
+       device = "pdf",
+       height = 6, width =10 , units = "in")
+
+
+
+imput_plot_upset <- upset_imput_grouped_by_type %>% 
+  group_by(reannotated) %>%
+  mutate(decile = ntile(velocity_pseudotime, 10)) %>% 
+  group_by(reannotated,decile,families) %>% 
+  summarise(n=n()) %>% 
+  group_by(reannotated,decile) %>% 
+  mutate(percent=(n/sum(n)),
+         families=strsplit(families, ','))
+
+for (type in reannotation_types) {
+  pseudotime_plot<- imput_plot_upset%>% 
+    filter(reannotated==type) %>% 
+    ggplot(aes(y=decile, x=families))+
+    ggtitle(type)+
+    geom_point(aes(size=percent), color='lightcoral')+
+    ggupset::scale_x_upset()+
+    theme_classic()
+  
+  ggsave(plot = pseudotime_plot,
+         filename =str_c("/users/genomics/josema/Trevino/upsets_psudotime/",
+                         type,
+                         "_pseudotime_upset.pdf"),
+         device = "pdf",
+         height = 6, width =6 , units = "in")
+}
+
+  
+

@@ -1,0 +1,1146 @@
+---
+title: "Cannabinoid receptor"
+output: html_document
+date: "2024-04-08"
+---
+
+# Introduction
+
+There are two main cannabinoid receptors: CB1 and CB2. This receptors are encoded by CNR1 and CNR2 genes, located in Chr6 and Chr1.
+
+The role of CNR1 in development and the consecuences that exogenous factors (drugs) might have in brain and CNS organogenesis.
+
+We usually use mice as experimental models to study the role of drug intake during pregnancy, but there are evidences that the cannabinoid receptor transcriptional pattern of mouse and human might be different.
+
+*Is the pattern of cannabinoid receptor expression along neurogenesis similar in mouse and human?*
+
+# Objectives
+
+-   Find mouse and human databases
+
+# Analysis using NOAK's dataset
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(readr) 
+#library(SeuratDisk)
+```
+
+```{r}
+# Load the data
+expression<-readRDS("~/Downloads/merged_scRNA_unfiltered_IDs_faye.RDS")
+```
+
+```{r}
+# create the metadata
+
+#para la expresion, cargo el data. aunq tambien esta el scaled.data. no se 100% bien cual de los dos deberia cargar. no se por que han escalado los datos
+
+expression_matrix<-expression@assays$RNA@data
+metadata<-expression@meta.data
+metadata$celltype<-Idents(expression)
+#mezclar las mitoticas con las no mitoticas.
+metadata$celltype<-gsub("_M","",metadata$celltype)
+metadata<-metadata %>% filter(!is.na(pseudotime))
+table(metadata$celltype)/175
+#hacer pseudobulks de 175 celulas. pq es lo mas justo para hacer 2 pseudobulks en pn3
+
+#hacer los heatmaps con esto. y luego ponerle los picos, su trayectoria, motivos, y spacing. y
+j<-1
+for (cell in c("NSC","IPC","PN1","PN2","PN3")) {
+  print(cell)
+  metadata_cell<-metadata %>% filter(celltype==cell)
+  metadata_cell<-metadata_cell %>% arrange(pseudotime)
+  i<-1
+  while ((i+175)<=length(metadata_cell$pseudotime)) {
+    pseudobulk_cells<-rownames(metadata_cell)[i:(i+174)]
+    pseudobulk_expression<-rowSums(as.matrix(expression_matrix[,pseudobulk_cells]))
+    if (j==1) { pseudo_expression<-pseudobulk_expression}
+    if (j>1) { pseudo_expression<-cbind(pseudo_expression,pseudobulk_expression)}
+    i<-i+175
+    j<-j+1
+  }
+}
+colnames(pseudo_expression)
+colnames(pseudo_expression)<-c(paste0("NSC_",1:11),paste0("IPC_",1:8),paste0("PN1_",1:9),paste0("PN2_",1:8),paste0("PN3_",1:2))
+```
+
+```{r}
+z_score <- pseudo_expression %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Symbol') %>%
+  pivot_longer(-Symbol, names_to = 'Cell_type', values_to = 'expression') %>% 
+  group_by(Symbol) %>% 
+  mutate(Zscore=(expression - mean(expression))/sd(expression)) %>%
+  ungroup() %>% 
+  mutate(Group=gsub('\\_.*','',Cell_type),
+         Group=factor(Group, levels=c('NSC','IPC','PN1','PN2','PN3')),
+         Pseudotime=gsub('.*\\_','',Cell_type),
+         Pseudotime= factor(Pseudotime, levels = as.character(1:12)),
+         Symbol=toupper(Symbol))
+```
+
+```{r, fig.width=6, fig.height=1.6}
+
+z_score %>% 
+  filter(grepl('CNR[[:digit:]]',Symbol)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=Pseudotime, y=Symbol, fill= expression))+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e') +
+  geom_tile()+
+  facet_grid(~Group, scales  = 'free', space = 'free')+
+  theme_bw()+
+  theme(legend.position = 'bottom',
+        strip.placement = "outside", 
+        strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x=element_blank())
+
+
+z_score %>% 
+  filter(grepl('CNR[[:digit:]]',Symbol)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=Pseudotime, y=Symbol, fill= Zscore))+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  geom_tile()+
+  facet_grid(~Group, scales  = 'free', space = 'free')+
+  theme_bw()+
+  theme(legend.position = 'bottom',
+        strip.placement = "outside", 
+        strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x=element_blank())
+```
+
+# La mano 2021 data
+
+```{r}
+Manno_mouse <- readRDS('/projects_ng/SC_DATA/Manno2021/mdev_seu_0503_2021.rds')
+Manno_mouse <- UpdateSeuratObject(Manno_mouse)
+```
+
+```{r}
+Manno_metadata <-  Manno_mouse@meta.data
+Manno_RNA <- Manno_mouse[["RNA"]]$data %>% Matrix::Matrix(as.matrix(.), sparse = T)
+```
+
+## Cannabinoid
+
+```{r}
+Manno_RNA %>% rownames() %>%  grep('Cnr[[:digit:]].*',., value=TRUE)
+
+Manno_RNA_Cnr<- Manno_RNA[c('Cnr1', 'Cnr2'),] %>% 
+  as.matrix() %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Cell_ID')
+
+Manno_RNA_Cnr_merged <- Manno_metadata %>% 
+  select(IsCycling,Age,Class,Subclass) %>% 
+  rownames_to_column('Cell_ID') %>% 
+  inner_join(Manno_RNA_Cnr, by='Cell_ID')
+
+Manno_RNA_Cnr_merged 
+```
+
+```{r}
+Plot_dotplot_Cnr_by_class <- Manno_RNA_Cnr_merged %>%
+  pivot_longer(c(Cnr1, Cnr2), names_to = 'Gene', values_to = 'Expression') %>%  
+  mutate_all(~replace(., .==0, NA)) %>%
+  group_by(Class, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= 1-(sum(is.na(Expression))/n())) %>% 
+  ungroup() %>% 
+  arrange(Gene,desc(Avg)) %>% 
+  ggplot()+
+  geom_point(aes(y=Class, x=Gene, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e') 
+
+
+ggsave(Plot_dotplot_Cnr_by_class,
+       filename='~/Plot_dotplot_Cnr_by_class.pdf',
+       device = "pdf",
+       height = 6, width =4 , units = "in")
+```
+
+```{r}
+Plot_dotplot_Cnr_by_class <- Manno_RNA_Cnr_merged %>%
+  pivot_longer(c(Cnr1, Cnr2), names_to = 'Gene', values_to = 'Expression') %>%  
+  group_by(Class, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  filter(Class%in%c('Neural tube','Radial glia','Neuroblast','Neuron')) %>% 
+  mutate(Class=factor(Class, levels=c('Neural tube','Radial glia','Neuroblast','Neuron'))) %>% 
+  group_by(Gene) %>% 
+  mutate(Zscore=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  ggplot()+
+  geom_point(aes(x=Class, y=Gene, size=Percent, color=Zscore))+
+  theme_classic()+
+  scale_color_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red"))
+
+ggsave(Plot_dotplot_Cnr_by_class,
+       filename='~/Plot_dotplot_Cnr_by_class.pdf',
+       device = "pdf",
+       height = 3, width =6 , units = "in")
+```
+
+```{r}
+Plot_dotplot_Cnr_by_class <- Manno_RNA_Cnr_merged %>%
+  pivot_longer(c(Cnr1, Cnr2), names_to = 'Gene', values_to = 'Expression') %>%  
+  group_by(Class, Gene, Age) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  filter(Class%in%c('Neural tube','Radial glia','Neuroblast','Neuron')) %>% 
+  mutate(Class=factor(Class, levels=c('Neural tube','Radial glia','Neuroblast','Neuron'))) %>% 
+  group_by(Gene) %>% 
+  mutate(Zscore=(Avg - mean(Avg))/sd(Avg)) %>% 
+  ungroup() %>% 
+  filter(Gene== 'Cnr1') %>% 
+  mutate_all(~replace(., .==0, NA)) %>%
+  ggplot()+
+  geom_point(aes(x=Class, y=Gene, size=Percent, color=Zscore))+
+  theme_classic()+
+  scale_color_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red"))
+
+ggsave(Plot_dotplot_Cnr_by_class,
+       filename='~/Plot_dotplot_Cnr_by_class.pdf',
+       device = "pdf",
+       height = 3, width =6 , units = "in")
+```
+
+```{r}
+
+Manno_mouse <- NormalizeData(object = Manno_mouse, scale.factor = 1e6)
+Manno_mouse <- ScaleData(object = Manno_mouse)
+Manno_mouse <- FindVariableFeatures(object = Manno_mouse)
+Manno_mouse <- RunPCA(object = Manno_mouse, features = VariableFeatures(object = Manno_mouse))
+Manno_mouse <- FindNeighbors(Manno_mouse, dims = 1:40)
+Manno_mouse <- FindClusters(Manno_mouse, resolution = 0.5)
+Manno_mouse <- RunUMAP(Manno_mouse, dims = 1:40)
+
+saveRDS(Manno_mouse, file = '~/Manno_mouse.rds')
+
+Manno_mouse <- readRDS('~/Manno_mouse.rds')
+
+Idents(object = Manno_mouse) <- "Class"
+
+group_colors <- c(Mesenchymal= '#E0E0E0',
+                  Other= '#E0E0E0',
+                  Neuroepithelial= '#E8E8A2',
+                  `Radial Glial`= '#79B5E0',
+                  IPC= '#8059B3',
+                  Neuronal= '#ED8785') 
+
+Manno_mouse@meta.data <-  Manno_mouse@meta.data %>%
+  mutate(color_groups= case_when(Class == 'Neuron' ~ 'Neuronal',
+                                 Class %in% c('Neural tube','Neural crest') ~ 'Neuroepithelial',
+                                 Class== 'Radial glia' ~ 'Radial Glial',
+                                 Class== 'Neuroblast' ~ 'IPC',
+                                 TRUE ~ 'Other')) 
+
+pdf(file = '~/feature_manno_fam.pdf')
+
+DimPlot(Manno_mouse, reduction = "umap", 
+        group.by = 'Class', label = T, repel = T,  raster = T) +
+  guides(fill="none", color="none")+
+  theme_classic()+
+  theme(aspect.ratio=1)
+  
+
+UMAP_plot_1 <- DimPlot(Manno_mouse, reduction = "umap", 
+        group.by = 'color_groups', raster = T) +
+  guides(fill="none", color="none")+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)+
+  ggtitle(element_blank())
+
+  
+
+UMAP_plot_2 <- FeaturePlot(Manno_mouse, reduction = "umap", 
+        features = c('Cnr1'), raster = T, order = T)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  ggtitle(element_blank())
+
+
+
+egg::ggarrange(UMAP_plot_1, UMAP_plot_2, ncol=1)
+
+dev.off()
+```
+
+```{r}
+
+
+pdf(file = '~/feature_manno_fam.pdf')
+
+DimPlot(Manno_mouse, reduction = "umap", 
+        group.by = 'Class', label = T, repel = T,  raster = T) +
+  guides(fill="none", color="none")+
+  theme_classic()+
+  theme(aspect.ratio=1)
+  
+
+UMAP_plot_1 <- DimPlot(Manno_mouse, reduction = "umap", 
+        group.by = 'color_groups', raster = T) +
+  guides(fill="none", color="none")+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)+
+  ggtitle(element_blank())
+
+
+UMAP_plot_2 <- FeaturePlot(Manno_mouse, reduction = "umap", 
+        features = c('Fam72a'), raster = T, order = T)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  ggtitle(element_blank())
+
+UMAP_plot_3 <- FeaturePlot(Manno_mouse, reduction = "umap", 
+        features = c('Srgap2'), raster = T, order = T)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  ggtitle(element_blank())
+
+egg::ggarrange(UMAP_plot_1, UMAP_plot_2, UMAP_plot_3, ncol=1)
+
+dev.off()
+```
+
+### dotplot la manno
+
+```{r}
+CNR1_manno <- FetchData(object = Manno_mouse, vars = "Cnr1", layer = "data") %>% rownames_to_column('Cell_Id')
+
+Manno_mouse_meta <-  Manno_mouse@meta.data %>%  rownames_to_column('Cell_Id') %>%  select(Cell_Id,Age,Class)
+
+com_class_order= c('Other','NSC', 'RG', 'IPC', 'NEU')
+age_order_manno=c('e7.0', 'e8.0', 'e8.5', 'e9.0', 'e10.0',
+  'e11.0', 'e12.0', 'e12.5', 'e13.0','e13.5',
+  'e14.0', 'e14.5', 'e15.0','e15.5', 'e16.0',
+  'e16.25','e16.5', 'e17.0', 'e17.5','e18.0')
+
+Manno_CNR1_exp_meta <- inner_join(CNR1_manno, Manno_mouse_meta) %>%   
+  mutate(com_class= case_when(Class == 'Neuron' ~ 'NEU',
+                                 Class %in% c('Neural tube','Neural crest') ~ 'NSC',
+                                 Class== 'Radial glia' ~ 'RG',
+                                 Class== 'Neuroblast' ~ 'IPC',
+                                 TRUE ~ 'Other'),
+         com_class= factor(com_class,levels=com_class_order),
+         Age=factor(Age, levels=age_order_manno)
+         ) 
+
+Manno_dotplot_data <- Manno_CNR1_exp_meta %>%
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(Cnr1,na.rm=TRUE),
+            Percent= (sum(Cnr1>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='Manno')
+
+write_csv(Manno_dotplot_data, '~/manno_dotplot_data_CNR1.csv')  
+
+```
+
+
+
+
+```{r}
+Braun_2023_exression <-  read_csv('datasets/human_files/X.csv', col_names = F) %>%
+  as.matrix() %>% 
+  t() %>% 
+  Matrix::Matrix(sparse = T)
+
+gene_metadata <- read_csv('datasets/human_files/var.csv') 
+cell_metadata <- read_csv('datasets/human_files/obs.csv')
+```
+
+# Eze
+
+```{r}
+cell_metadata <- read_tsv('/users/genomics/josema/scdatasets/eze_2021/meta.tsv')
+gene_expression_matrix <-  read_tsv('/users/genomics/josema/scdatasets/Eze_2021/exprMatrix.tsv') %>%
+  column_to_rownames('gene') %>% 
+  as.matrix() %>% 
+  Matrix::Matrix(sparse = T)
+```
+
+```{r}
+library(readxl)
+cortex_metadata <- read_excel("/users/genomics/josema/scdatasets/Eze_2021/41593_2020_794_MOESM3_ESM.xlsx", 
+    sheet = "5 Cortex Annotations") %>% 
+  rename(Cell=`...1`)
+```
+
+```{r}
+cortex_metadata <- cortex_metadata %>% 
+  filter(Cell %in% colnames(gene_expression_matrix)) %>% 
+  arrange(factor(Cell, levels=colnames(gene_expression_matrix))) %>% 
+  column_to_rownames('Cell')
+```
+
+```{r}
+Eze <-  CreateSeuratObject(counts = gene_expression_matrix, meta.data = cortex_metadata)
+Eze <-  NormalizeData(object = Eze, scale.factor = 1e6)
+Eze@assays$RNA$data <-  gene_expression_matrix
+Eze <- ScaleData(object = Eze)
+Eze <- FindVariableFeatures(object = Eze)
+Eze <- RunPCA(object = Eze, features = VariableFeatures(object = Eze))
+Eze <- FindNeighbors(Eze, dims = 1:40)
+Eze <- FindClusters(Eze, resolution = 0.5)
+Eze <- RunUMAP(Eze, dims = 1:40)
+```
+
+
+```{r}
+# como no funciona esta mierda porque ya está normalizado, lo hago por ggplot
+
+UMAP_coordinates <-  read_tsv('/users/genomics/josema/datasets/Eze_2021/UMAP.coords.tsv', 
+                              col_names = F) %>% 
+  setNames(c('Cell', 'UMAP1','UMAP2'))
+
+UMAP_coordinates <-  cbind( UMAP_coordinates,
+                            gene_expression_matrix [c('FAM72A','FAM72B','FAM72C','FAM72D',
+                                                    'SRGAP2','SRGAP2B','SRGAP2C'),
+                                                  UMAP_coordinates$Cell] %>% as.matrix() %>%  t() )
+UMAP_coordinates <-  UMAP_coordinates %>% 
+  inner_join(cortex_metadata %>%  rownames_to_column('Cell'), by= 'Cell') 
+
+
+UMAP_coordinates %>%  distinct(`Cell Type`)
+```
+
+
+```{r}
+
+group_colors <- c(Mesenchymal= '#E0E0E0',
+                  Other= '#E0E0E0',
+                  Neuroepithelial= '#E8E8A2',
+                  `Radial Glial`= '#79B5E0',
+                  IPC= '#8059B3',
+                  Neuronal= '#ED8785')
+
+pdf('~/plot_test.pdf')
+
+UMAP_plot_1 <- UMAP_coordinates %>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= UMAP1, y= UMAP2, color=CNR1)) +
+  geom_point(size=0.1,aes(color=`Cell Type`))+
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5)))+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)
+
+
+UMAP_Plot_2 <-  UMAP_coordinates %>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= UMAP1, y= UMAP2, color=CNR1)) +
+  geom_point(size=0.1)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)
+
+egg::ggarrange(UMAP_plot_1, UMAP_Plot_2, ncol=1)
+dev.off()
+
+
+```
+
+```{r}
+feature_plot_eze <-  function(gen){
+  UMAP_coordinates %>% 
+  arrange({{gen}}) %>% 
+  ggplot( aes(x= UMAP1, y= UMAP2, color={{gen}})) +
+  geom_point(size=0.1, show.legend = F)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+    xlab(element_blank())+
+    ylab(element_blank())
+ }
+
+pdf('~/feature_Eze_fam.pdf', width=9, height=4)
+
+UMAP_coordinates %>% 
+  ggplot( aes(x= UMAP1, y= UMAP2)) +
+  geom_point(size=0.1,aes(color=`Cell Type`))+
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5)))+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)
+
+FAM72A_plot<-  feature_plot_eze (FAM72A)
+FAM72B_plot<-  feature_plot_eze (FAM72B)
+FAM72C_plot<-  feature_plot_eze (FAM72C)
+FAM72D_plot<-  feature_plot_eze (FAM72D)
+
+
+SRGAP2_plot<-  feature_plot_eze (SRGAP2)
+SRGAP2B_plot<-  feature_plot_eze (SRGAP2B)
+SRGAP2C_plot<-  feature_plot_eze (SRGAP2C)
+
+
+
+egg::ggarrange(FAM72A_plot, FAM72D_plot, FAM72C_plot, FAM72B_plot,
+               SRGAP2_plot, SRGAP2B_plot, SRGAP2B_plot, SRGAP2C_plot, ncol=4)
+
+dev.off()
+```
+
+### eze dotplot
+
+```{r}
+
+age_order_eze <- c('1','12','13','14','15','19','20','22')
+
+eze_metadata <- cortex_metadata %>%  
+  select( Age, `Cell Type`) %>% 
+  rownames_to_column('Cell_Id') %>% 
+  mutate(com_class= case_when(`Cell Type` %in% c('Neuronal') ~ 'NEU',
+                              `Cell Type`%in% c('Radial Glial') ~ 'RG',
+                              `Cell Type`%in% c('IPC') ~ 'IPC',
+                              `Cell Type`%in% c('Neuroepithelial') ~ 'NSC',
+                              TRUE ~ 'Other'),
+         Age=factor(Age, levels=age_order_eze))
+
+eze_dotplot_data <- gene_expression_matrix['CNR1',] %>%
+  as.data.frame() %>% setNames('CNR1') %>% 
+  rownames_to_column('Cell_Id') %>%
+  inner_join(eze_metadata, by= 'Cell_Id') %>% 
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(CNR1,na.rm=TRUE),
+            Percent= (sum(CNR1>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='Eze')
+
+write_csv(eze_dotplot_data,'CNR1/eze_dotplot_data.csv')
+
+```
+
+
+
+# NOAK
+
+```{r}
+expression <- readRDS("~/merged_scRNA_unfiltered_IDs_faye.RDS")
+expression <- UpdateSeuratObject(expression)
+
+
+group_colors <- c(MG= '#E0E0E0',
+                  CR= '#E0E0E0',
+                  Mural= '#E0E0E0',
+                  IN= '#E0E0E0',
+                  `NSC`= '#79B5E0',
+                  `NSC_M`= '#79B5E0',
+                  IPC= '#8059B3',
+                  IPC_M= '#8059B3',
+                  PN1= '#ED8785',
+                  PN2= '#ED8785',
+                  PN3= '#ED8785')
+
+
+feature_expression_plot <- function(gene){functionFeaturePlot(expression, reduction = "umap",
+        features = c(gene), 
+        label = F, raster = T, order = T,  pt.size= 2) +
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  ggtitle(element_blank())
+}
+
+
+pdf(file = '~/feature_noak_fam.pdf')
+
+DimPlot(expression, reduction = "umap", 
+        repel = T, label = T, raster = T,  pt.size= 2) +
+  guides(fill="none", color="none")+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)+
+  ggtitle(element_blank())
+
+
+plot_class <- DimPlot(expression, reduction = "umap", 
+                      label = F, raster = T,  pt.size= 2) +
+  guides(fill="none", color="none")+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)+
+  ggtitle(element_blank())
+
+
+
+FAM72D <- FeaturePlot(expression, reduction = "umap",
+        features = c('FAM72D'), 
+        label = F, raster = T, order = T,  pt.size= 2) +
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  ggtitle(element_blank())
+
+FAM72D <- FeaturePlot(expression, reduction = "umap",
+        features = c('FAM72D'), 
+        label = F, raster = T, order = T,  pt.size= 2) +
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_clas
+
+egg::ggarrange(plot_class, plot_fam72a, plot_srgap2, ncol=1)
+
+
+egg::ggarrange(plot_class, plot_cnr1, ncol=1)
+
+dev.off()
+
+```
+
+### Dotplot noak
+
+```{r}
+expression <- readRDS("~/merged_scRNA_unfiltered_IDs_faye.RDS")
+expression <- UpdateSeuratObject(expression)
+CNR1_noak <- FetchData(object = expression, vars = "Cnr1", layer = "data") %>% rownames_to_column('Cell_Id')
+
+
+metadata<-expression@meta.data
+metadata$celltype<-Idents(expression)
+metadata$celltype<-gsub("_M","",metadata$celltype)
+
+metadata<-metadata %>% 
+  filter(!is.na(pseudotime)) 
+
+age_order_NOAK <-  c(paste('NSC',1:8, sep = '_'), paste('IPC',1:12, sep = '_'),paste('PN1',1:9, sep = '_'),paste('PN2',1:8, sep = '_'),paste('PN3', 1:2, sep = '_'))
+
+
+grouped_pseudotime <- metadata %>% 
+  rownames_to_column('Cell_Id') %>% 
+  select(Cell_Id,celltype, pseudotime) %>% 
+  group_by(celltype) %>% 
+  arrange(pseudotime) %>% 
+  mutate(Pseudotime_group=rep(1:ceiling(n()/175),each=175, length.out=n())) %>% 
+  group_by(celltype, Pseudotime_group) %>% 
+  filter(n()==175) %>% 
+  ungroup() %>% 
+  mutate(Age= paste(celltype,Pseudotime_group, sep='_'),
+        com_class= case_when(celltype %in% c('PN1', 'PN2', 'PN3') ~ 'NEU',
+                                 celltype%in% c('NSC', 'NSC_M') ~ 'RG',
+                                 celltype%in% c('IPC', 'IPC_M') ~ 'IPC',
+                                 TRUE ~ 'Other'),
+         Age=factor(Age, levels=age_order_NOAK))
+
+
+Noak_dotplot_data <- inner_join(CNR1_noak,grouped_pseudotime) %>% 
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(Cnr1,na.rm=TRUE),
+            Percent= (sum(Cnr1>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='Noak')
+  
+write.csv(Noak_dotplot_data, '~/Noak_dotplot_data')
+```
+
+
+# trevino
+
+```{r}
+trevino<-readRDS('~/Trevino/RDS_files/data.RDS')
+trevino
+
+#trevino <-  NormalizeData(object = trevino, scale.factor = 1e6)
+```
+
+
+```{r}
+trevino_cnr1 <-  trevino@meta.data %>% 
+  mutate(CNR1 = trevino@assays$RNA$data[c('CNR1'),rownames(trevino@meta.data)],
+         )%>% 
+  mutate(com_class= case_when(cell.type %in% c('GluN5','GluN4','GluN3','GluN2','GluN7','GluN1','GluN6','GluN8') ~ 'NEU',
+                              cell.type%in% c('Early_RG','tRG','Cyc._Prog.','Late_RG') ~ 'RG',
+                              cell.type%in% c('nIPC') ~ 'IPC',
+                              TRUE ~ 'Other'))
+
+trevino_cnr1 %>% 
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(CNR1,na.rm=TRUE),
+            Percent= (sum(CNR1>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='Trevino') %>% 
+  write.csv('~/trevino_dotplot_data')
+  
+
+group_colors <- c(
+MG = '#E0E0E0',
+mGPC = '#E0E0E0',
+OPC_Oligo = '#E0E0E0',
+GluN5 = '#ED8785',
+GluN4 = '#ED8785',
+Late_RG = '#79B5E0',
+GluN3 = '#ED8785',
+Peric. = '#E0E0E0',
+SP = '#E0E0E0',
+nIPC = '#8059B3',
+CGE_IN = '#E0E0E0',
+Cyc._Prog. = '#79B5E0',
+tRG = '#79B5E0',
+MGE_IN = '#E0E0E0',
+GluN2 = '#ED8785',
+Early_RG = '#79B5E0',
+GluN7 = '#ED8785',
+EC = '#E0E0E0',
+GluN1 = '#ED8785',
+GluN6 = '#ED8785',
+GluN8 = '#ED8785',
+RBC = '#E0E0E0',
+VLMC = '#E0E0E0'
+ )
+
+
+
+
+
+pdf('~/trevino_feature.pdf')
+
+a<- trevino_cnr1 %>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= UMAP_0, y= UMAP_1, color=`cell.type`)) +
+  geom_point(size=0.1)+
+  theme_classic()+
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5)))+
+  theme(aspect.ratio=1)+
+    scale_color_manual(values=group_colors, na.value = 'yellow')
+
+b <- trevino_cnr1 %>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= UMAP_0, y= UMAP_1, color=CNR1)) +
+  geom_point(size=0.1)+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')
+
+egg::ggarrange(a,b,ncol=1)
+
+dev.off()
+
+```
+
+## trevino dotplot
+
+
+
+
+# dotplot fusionado 
+
+
+
+# monkey dataset
+
+```{r}
+metadata_monkey <- read_csv('/users/genomics/josema/metadata_monkey.csv')
+CNR1_monkey <- read_csv('/users/genomics/josema/monkey_CNR1.csv')
+
+metadata_filtered <- metadata_monkey %>%  select(UMAP_1,UMAP_2,orig.ident, observations, subclass)
+
+  
+
+age_oder_monkey <- c('E37','E42','E43','E54','E62','E64','E77','E78','E93','RMB691','RMB683')  
+
+group_colors <- c(`dorsal NSC`='#E8E8A2' ,   
+                  `GE NSC`='#E8E8A2',
+                  
+                  `Early subtypes` =   '#79B5E0',
+                  `Patterning centers` = '#79B5E0',
+                  
+                  enIPC= '#8059B3',
+                  inIPC= '#8059B3',
+
+                  CR= '#ED8785',
+                  `Excitatory neurons` ='#ED8785',
+                  `Inhibitory neurons` ='#ED8785',
+
+                  gIPC ='#E0E0E0',
+                  Astro ='#E0E0E0',
+                  `OPC-Oligo` ='#E0E0E0',    
+                  Immune =  '#E0E0E0',        
+                  `RB & Vas` = '#E0E0E0',      
+                  Mes ='#E0E0E0')
+
+UMAP_coordinates <- metadata_filtered %>% inner_join(CNR1_monkey) %>%  rename(CNR1='ENSG00000118432')
+```
+
+
+```{r}
+pdf('~/plot_monkey.pdf')
+
+UMAP_plot_1 <- UMAP_coordinates %>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= UMAP_1, y= UMAP_2)) +
+  geom_point(size=0.1,aes(color=subclass))+
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5)))+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+  scale_color_manual(values=group_colors)
+
+
+UMAP_Plot_2 <-  UMAP_coordinates %>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= UMAP_1, y= UMAP_2, color=CNR1)) +
+  geom_point(size=0.1)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)
+
+egg::ggarrange(UMAP_plot_1, UMAP_Plot_2, ncol=1)
+
+dev.off()
+
+mutate( case_when())
+
+```
+
+### monkey dotplot
+```{r}
+UMAP_coordinates <- UMAP_coordinates %>% 
+  mutate(com_class= case_when(subclass %in% c('CR','Excitatory neurons','Inhibitory neurons') ~ 'NEU',
+                              subclass%in% c('Early subtypes','Patterning centers') ~ 'RG',
+                              subclass%in% c('enIPC','inIPC') ~ 'IPC',
+                              subclass%in% c('dorsal NSC','GE NSC') ~ 'NSC',
+                              TRUE ~ 'Other'),
+         Age=factor(orig.ident, levels=age_oder_monkey))
+
+micali_dotplot_data <- UMAP_coordinates %>% 
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(CNR1,na.rm=TRUE),
+            Percent= (sum(CNR1>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='Micali')
+
+write_csv(micali_dotplot_data,'CNR1/micali_dotplot_data.csv')
+```
+
+
+# dotplot general
+
+```{r}
+Noak_dotplot_data <-  read_csv('/home/josema/Desktop/CNR1/Noak_dotplot_data.csv')
+Manno_dotplot_data <- read_csv('/home/josema/Desktop/CNR1/manno_dotplot_data_CNR1.csv')
+Eze_dotplot_data <- read_csv('/home/josema/Desktop/CNR1/eze_dotplot_data.csv')
+Micali_dotplot_data <- read_csv('/home/josema/Desktop/CNR1/micali_dotplot_data.csv')
+trevino_dotplot_data<- read_csv('/home/josema/Desktop/CNR1/trevino_dotplot_data.csv')
+age_order_NOAK <-  c(paste('NSC',1:8, sep = '_'),
+                     paste('IPC',1:12, sep = '_'),
+                     paste('PN1',1:9, sep = '_'),
+                     paste('PN2',1:8, sep = '_'),
+                     paste('PN3', 1:2, sep = '_'))
+
+age_order_eze <- c('1','12','13','14','15','19','20','22')
+
+age_order_manno=c('e7.0', 'e8.0', 'e8.5', 'e9.0', 'e10.0',
+                  'e11.0', 'e12.0', 'e12.5', 'e13.0','e13.5',
+                  'e14.0', 'e14.5', 'e15.0','e15.5', 'e16.0',
+                  'e16.25','e16.5', 'e17.0', 'e17.5','e18.0')
+
+age_order_trevino <-  c('pcw16','pcw20','pcw21','pcw24')
+
+age_oder_monkey <- c('E37','E42','E43','E54','E62','E64',
+                     'E77','E78','E93','RMB691','RMB683')  
+
+age_order_bella <- c('E10','E11','E12','E13','E14','E15','E16','E17','E18_S1','E18_S3','P1','P1_S1','P4')
+age_order_braun <- paste0(c('5','5.5','6','6.6','6.7','6.9','7','7.5','8','8.1','8.5','9.2','9.5','10','11.5','12','13','14'),'_W')
+
+dibella_dotplot %>% distinct(Age)
+global_order <- c(age_order_NOAK,age_order_eze,age_order_manno,age_oder_monkey,age_order_bella,age_order_braun,age_order_trevino)
+
+```
+
+
+```{r}
+merged_dotplot <- rbind(Noak_dotplot_data,
+                        Eze_dotplot_data,
+                        Manno_dotplot_data,
+                        Micali_dotplot_data,
+                        dibella_dotplot,
+                        braun_dotplot,
+                        trevino_dotplot_data[,2:7]) %>% 
+  filter(!is.na(Age)) %>% 
+  filter(com_class!='Other') %>% 
+  mutate(com_class=factor(com_class, levels= c('NSC', 'RG', 'IPC', 'NEU')),
+         Age=factor(Age,levels=global_order),
+         datasets=dataset) %>% 
+  group_by(datasets) %>% 
+  mutate(max_0=(Avg- 0) /(max(Avg)-0))
+```
+
+
+```{r}
+merged_dotplot_plot <- merged_dotplot %>% 
+  ggplot()+
+  geom_tile(aes(y=dataset, x=Age, fill=max_0),
+             color='gray80')+
+  theme_classic()+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(datasets~dataset+com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))
+
+ggsave(merged_dotplot_plot,
+       filename='/home/josema/Desktop/Braun/merged_dotplot.pdf',
+       device = "pdf",
+       height = 3.5, width =20, units = "in") 
+
+library(ggplot2)
+```
+
+
+```{r}
+plot_function_merged <- function(dataset){
+merged_tile <- dataset %>% 
+  ggplot()+
+  geom_tile(aes(y='CNR1', x=Age, fill=min_max),
+             color='gray80')+
+  theme_classic()+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  facet_grid(~dataset+com_class, switch = 'y', scales = 'free', space='free' )+
+  theme( axis.text.x = element_text( angle = 45,vjust=1,hjust = 1),
+         legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = 'white',
+                                        fill='gray40'), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_blank(),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray80", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+
+merged_percent <- dataset %>% 
+  ggplot()+
+  geom_col(aes(y=Percent, x=Age),
+           fill='gray80',
+           color='gray80')+
+  theme_classic()+
+  facet_grid(~dataset+com_class, switch = 'y', scales = 'free', space='free' )+
+  theme( legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.border = element_rect(color = NA , fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))
+
+return( egg::ggarrange( merged_percent, merged_tile, ncol=1, heights = c(1.75,1)))
+}
+
+pdf('/home/josema/Desktop/Braun/common_tile.pdf', width=30, height=2.8)
+plot_function_merged(merged_dotplot)
+dev.off()
+
+
+pdf('CNR1/noak_tile.pdf', width=10, height=3)
+plot_function_merged(Noak_dotplot_data)
+dev.off()
+
+pdf('CNR1/eze_tile.pdf', width=10, height=2.5)
+plot_function_merged(Eze_dotplot_data)
+dev.off()
+
+pdf('CNR1/manno_tile.pdf', width=10, height=2.8)
+plot_function_merged(Manno_dotplot_data)
+dev.off()
+
+pdf('CNR1/micali_tile.pdf', width=10, height=3)
+plot_function_merged(Micali_dotplot_data)
+dev.off()
+
+
+ggsave(merged_percent,
+       filename='CNR1/merged_tile.pdf',
+       device = "pdf",
+       height = 7, width =10, units = "in") 
+
+
+```
+
+
+
+
+# Di bella dataset
+
+```{r}
+dibella_expression <- Matrix::readMM('/home/josema/Downloads/gene_sorted-matrix.mtx')
+dibella_Metadata <- read_tsv('/home/josema/Downloads/metaData_scDevSC.txt') %>% slice(-1)
+dibella_genes <-  read_tsv('/home/josema/Downloads/genes(1).tsv',col_names = F)
+
+colnames(dibella_expression) <- dibella_Metadata %>% pull(NAME)
+rownames(dibella_expression) <- dibella_genes %>% pull(X1)
+
+dibella_expression_CNR1 <- dibella_expression['Cnr1',] %>%  as.data.frame() %>%  set_names('CNR1')
+dibella_UMAP <- read_tsv('/home/josema/Downloads/cluster_scDevSC.merged.umap.txt')%>% slice(-1)
+
+dibella_merged <- dibella_Metadata %>%  
+  cbind(dibella_expression_CNR1) %>% 
+  inner_join(dibella_UMAP,by='NAME') %>% 
+  mutate(com_class= case_when(New_cellType %in% c('Cajal Retzius cells','CThPN',
+                                       'DL CPN','DL_CPN_1','DL_CPN_2',
+                                       'Immature neurons','Interneurons',
+                                       'Layer 4','Layer 6b','Migrating neurons',
+                                       'SCPN','UL CPN','VLMC') ~ 'NEU',
+                              New_cellType%in% c('Apical progenitors') ~ 'RG',
+                              New_cellType%in% c('Intermediate progenitors') ~ 'IPC',
+                              TRUE ~ 'Other'),
+         X=as.numeric(X),
+         Y=as.numeric(Y))
+
+dibella_dotplot <- dibella_merged %>%  
+  mutate(Age=biosample_id) %>% 
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(CNR1,na.rm=TRUE),
+            Percent= (sum(CNR1>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='di Bella')
+```
+
+
+```{r}
+group_colors <- c(Other= '#E0E0E0',
+                  RG= '#79B5E0',
+                  IPC= '#8059B3',
+                  NEU= '#ED8785')
+
+pdf('~/Downloads/plot_test_dibella.pdf')
+ 
+UMAP_plot_1 <- dibella_merged %>% 
+  ggplot( aes(x= (X), y= (Y), color=com_class)) +
+  geom_point(size=0.1)+
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5)))+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+    scale_color_manual(values=group_colors)
+
+
+UMAP_Plot_2 <-  dibella_merged%>% 
+  arrange(CNR1) %>% 
+  ggplot( aes(x= (X), y= (Y), color=CNR1)) +
+  geom_point(size=0.1)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)
+
+egg::ggarrange(UMAP_plot_1, UMAP_Plot_2, ncol=1)
+
+dev.off()
+```
+
+# Braun
+
+```{r}
+braun_expression <- read_csv('/home/josema/Desktop/human_CNR1.csv') 
+braun_Metadata <- read_csv('/home/josema/Downloads/obs.csv')
+
+braun_ID <- read_csv('/home/josema/Desktop/Braun/CellID.csv')[,2]
+braun_tsne <- read_csv('/home/josema/Desktop/Braun/Embedding.csv') [,2:3]
+braun_age <- read_csv('/home/josema/Desktop/Braun/Age.csv')[,2]
+braun_merged_CNR1<-  cbind(braun_Metadata,braun_expression) 
+
+braun_merged_CNR1 <- cbind(braun_ID, braun_tsne, braun_age) %>% setNames(c('CellID', 'tsne1', 'tsne2', 'Age')) %>% 
+  inner_join(braun_merged_CNR1, by='CellID')
+
+braun_merged_CNR1 <- braun_merged_CNR1 %>% 
+  mutate(com_class= case_when(CellClass %in% c("b'Neuron'") ~ 'NEU',
+                              CellClass%in% c("b'Radial glia'") ~ 'RG',
+                              CellClass%in% c("b'Neuronal IPC'"	,"b'Neuroblast'"	) ~ 'IPC',
+                              TRUE ~ 'Other'))
+
+group_colors <- c(Other= '#E0E0E0',
+                  RG= '#79B5E0',
+                  IPC= '#8059B3',
+                  NEU= '#ED8785')
+
+
+pdf('~/Downloads/plot_test_braun.pdf')
+ 
+UMAP_plot_1 <- braun_merged_CNR1 %>% 
+    arrange(ENSG00000118432) %>% 
+  ggplot( aes(x= (tsne1), y= (tsne2), color=com_class)) +
+  geom_point(size=0.1)+
+  guides(color = guide_legend(override.aes=list(shape = 15, size = 5)))+
+  theme_classic()+
+  theme(aspect.ratio=1)+
+    scale_color_manual(values=group_colors)
+
+
+UMAP_Plot_2 <-  braun_merged_CNR1%>% 
+  arrange(ENSG00000118432) %>% 
+  ggplot( aes(x= (tsne1), y= (tsne2), color=ENSG00000118432)) +
+  geom_point(size=0.1)+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  theme(aspect.ratio=1)
+
+egg::ggarrange(UMAP_plot_1, UMAP_Plot_2, ncol=1)
+
+dev.off()
+
+```
+
+## braun dotplot
+
+```{r}
+
+braun_dotplot <- braun_merged_CNR1 %>%  
+  group_by(com_class,Age) %>% 
+  summarise(Avg=mean(ENSG00000118432,na.rm=TRUE),
+            Percent= (sum(ENSG00000118432>0)/n())) %>% 
+  ungroup() %>% 
+  mutate(min_max=(Avg- min(Avg)) /(max(Avg)-min(Avg))) %>% 
+  mutate(dataset='Braun',
+         Age=paste0(as.factor(Age),'_W')) 
+```
+
+

@@ -1,0 +1,789 @@
+---
+title: "Victor analysis"
+author: "Josema"
+date: "2024-09-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(tidyverse)
+```
+
+
+# Load data
+
+For the whole analysis I'll be using the complete list of domains and genes that Victor sent.
+
+```{r}
+data<- read.delim("/home/josema/Downloads/DRIP/WITH TTN AAs/marten_domain_PS+complexity20240606_original_20240625.tsv", row.names=1)
+```
+
+First of all, I'll do is assume that every domain that has the same identifier has the same age, using the max. 
+
+```{r}
+data_age_unified <- data %>% 
+  group_by(domain_accession) %>% 
+  mutate(Domain_PS_Age=max(Domain_PS_Age, na.rm = T),
+         Domain_PS=min(Domain_PS, na.rm = T),
+         Domain_Era=min(Domain_Era, na.rm = T),
+         Domain_Era_Age=max(Domain_Era_Age, na.rm = T)) %>% 
+  ungroup() 
+
+# asegurarme de que solo haya una edad por dominio
+data_age_unified %>% 
+  distinct(domain_accession, Domain_PS) %>% 
+  count(domain_accession,sort = T) %>% 
+  count(n)
+
+
+data_age_unified %>%  filter(Name=='ENSP00000001008')
+
+```
+
+
+# Functions
+
+```{r}
+plot_bar <-  function(data, x, y, threshold,fill){
+  data %>% 
+  ggplot(aes(x={{x}},y={{y}})) +
+  geom_col(fill=fill)+
+  theme_classic()+
+  coord_cartesian(expand = F) +
+  geom_text(data= filter(data, {{y}} >= threshold),aes(label = {{y}}), hjust=1.1, vjust = 0.5, angle = 90, color= 'white')+
+  geom_text(data= filter(data, {{y}} < threshold),aes(label = {{y}}), hjust=-0.1, vjust = 0.5, angle = 90, color= 'gray20')
+}
+
+plot_bar_groups <-  function(data, x, y, group, label, threshold,fill, font_size){
+  data %>% 
+  ggplot(aes(x={{x}},y={{y}},group={{group}},fill={{group}})) +
+  geom_col(position=position_dodge(width = .9))+
+  theme_classic()+
+  xlab('Era')+
+  ylab('Counts')+
+  coord_cartesian(expand = F) +
+  geom_text(data= filter(data, {{y}} >= threshold),aes(label = {{label}}), hjust=1.1, vjust = 0.5, angle = 90, color= 'white', position = position_dodge(width = .9), size=font_size)+
+  geom_text(data= filter(data, {{y}} < threshold),aes(label = {{label}}), hjust=-0.1, vjust = 0.5, angle = 90, color= 'gray20', position = position_dodge(width = .9), size=font_size)
+}
+
+```
+
+
+# Figure 1
+
+## Figure 1A
+
+Number of genes by PS / PS age and Era
+
+```{r}
+Figure_1AA <- data_age_unified %>%  
+  distinct(Name, PS) %>% 
+  count(PS) %>% 
+  plot_bar(x =PS ,y =n ,threshold =1000 ,fill ='lightcoral' )
+  
+Figure_1AB <- data_age_unified %>%
+  distinct(Name, PS_Age) %>% 
+  count(PS_Age) %>% 
+  mutate(PS_Age = factor(PS_Age)) %>% 
+  plot_bar(x =PS_Age ,y =n ,threshold =1000 ,fill ='lightcoral')+
+  theme(axis.text.x = element_text(angle = , vjust=1, hjust=1)) 
+
+Figure_1AC <- data_age_unified %>%
+  distinct(Name, Era) %>% 
+  count(Era) %>% 
+  plot_bar(x =Era ,y =n ,threshold =5000 ,fill ='lightcoral')
+
+Figure_1 <- egg::ggarrange(Figure_1AA,Figure_1AB,Figure_1AC)
+
+```
+
+## Figure 1B
+
+Pfam distribution
+
+```{r}
+Figure_1BA <- data_age_unified %>%  
+  distinct(domain_accession, Domain_PS) %>% 
+  count(Domain_PS) %>% 
+  filter(!is.infinite(Domain_PS)) %>% 
+  plot_bar(x =Domain_PS ,y =n ,threshold =20 ,fill ='lightcoral' )
+  
+Figure_1BB <- data_age_unified %>%
+  distinct(domain_accession, Domain_PS_Age) %>% 
+  count(Domain_PS_Age) %>% 
+  filter(!is.infinite(Domain_PS_Age)) %>% 
+  mutate(Domain_PS_Age = factor(Domain_PS_Age)) %>% 
+  plot_bar(x =Domain_PS_Age ,y =n ,threshold =1000 ,fill ='lightcoral')+
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+
+Figure_1BC <- data_age_unified %>%
+  distinct(domain_accession, Domain_Era) %>% 
+  count(Domain_Era) %>% 
+  filter(!is.infinite(Domain_Era)) %>% 
+  plot_bar(x =Domain_Era ,y =n ,threshold =5000 ,fill ='lightcoral')
+
+Figure_1B <- egg::ggarrange(Figure_1BA,Figure_1BB,Figure_1BC)
+```
+
+## Figure 1B2
+
+Pfam dsitribution
+
+```{r}
+data_age_unified_fam <- data_age_unified %>% 
+  group_by(Pfam_Clan) %>% 
+  mutate(Pfam_PS_Age=max(Domain_PS_Age, na.rm = T),
+         Pfam_PS=min(Domain_PS, na.rm = T),
+         Pfam_Era=min(Domain_Era, na.rm = T),
+         Pfam_Era_Age=max(Domain_Era_Age, na.rm = T)) %>% 
+  ungroup() 
+  
+
+Figure_1BA2 <- data_age_unified_fam %>%  
+  distinct(Pfam_Clan, Pfam_PS) %>% 
+  count(Pfam_PS) %>% 
+  filter(!is.na(Pfam_PS), !is.infinite(Pfam_PS)) %>% 
+  plot_bar(x =Pfam_PS ,y =n ,threshold =100 ,fill ='lightcoral' )
+  
+Figure_1BB2 <- data_age_unified_fam %>%
+  distinct(Pfam_Clan, Pfam_PS_Age) %>% 
+  count(Pfam_PS_Age) %>% 
+  filter(!is.na(Pfam_PS_Age), !is.infinite(Pfam_PS_Age)) %>% 
+  mutate(Pfam_PS_Age = factor(Pfam_PS_Age)) %>% 
+  plot_bar(x =Pfam_PS_Age ,y =n ,threshold =100 ,fill ='lightcoral')+
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+
+Figure_1BC2 <- data_age_unified_fam %>%
+  distinct(Pfam_Clan, Pfam_Era) %>% 
+  count(Pfam_Era) %>% 
+  filter(!is.na(Pfam_Era), !is.infinite(Pfam_Era)) %>% 
+  plot_bar(x =Pfam_Era ,y =n ,threshold =10 ,fill ='lightcoral')
+
+Figure_1B2 <- egg::ggarrange(Figure_1BA2,Figure_1BB2,Figure_1BC2)
+```
+
+## Figure 1B3
+
+Individual domains
+
+```{r}
+Figure_1BA3 <- data %>%  
+  count(Domain_PS) %>% 
+  filter(!is.na(Domain_PS)) %>% 
+  plot_bar(x =Domain_PS ,y =n ,threshold =1000 ,fill ='lightcoral' )
+  
+Figure_1BB3 <- data %>%
+  count(Domain_PS_Age) %>% 
+  filter(!is.na(Domain_PS_Age)) %>% 
+  mutate(Domain_PS_Age = factor(Domain_PS_Age)) %>% 
+  plot_bar(x =Domain_PS_Age ,y =n ,threshold =1000 ,fill ='lightcoral')+
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+
+Figure_1BC3 <- data %>%
+  count(Domain_Era) %>% 
+  filter(!is.na(Domain_Era)) %>% 
+  plot_bar(x =Domain_Era ,y =n ,threshold =5000 ,fill ='lightcoral')
+
+Figure_1B3 <- egg::ggarrange(Figure_1BA3,Figure_1BB3,Figure_1BC3)
+```
+
+## Figure 1C
+
+```{r}
+# create a common table of  eras and PS
+
+## Genes
+
+merged_ages_counts <- rbind(
+  data_age_unified %>%
+    distinct(Name, Era) %>% 
+    count(Era)  %>%   
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='Era',Classif='Gene'),
+    
+  data_age_unified %>%
+    distinct(Name, PS) %>% 
+    count(PS) %>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='PS',Classif='Gene'),
+  
+  data_age_unified %>%  
+    distinct(domain_accession, Domain_PS) %>% 
+    count(Domain_PS) %>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='PS',Classif='Accession'),
+  
+  data_age_unified %>%  
+    distinct(domain_accession, Domain_Era) %>% 
+    count(Domain_Era)%>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='Era',Classif='Accession'),
+  
+  data_age_unified_fam %>%  
+    distinct(Pfam_Clan, Pfam_PS) %>% 
+    count(Pfam_PS) %>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='PS',Classif='Pfam'),
+  
+  data_age_unified_fam %>%  
+    distinct(Pfam_Clan, Pfam_Era) %>% 
+    count(Pfam_Era)%>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='Era',Classif='Pfam'),  
+  
+  data %>%  
+    count(Domain_PS) %>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='PS',Classif='Domain'),
+  
+  data %>%  
+    count(Domain_Era)%>% 
+    setNames(c('Group','Count')) %>% 
+    mutate(Level='Era',Classif='Domain')) %>%     
+  
+  filter(!is.na(Group), !is.infinite(Group)) %>% 
+  group_by(Classif, Level) %>% 
+  mutate(Percent= (Count/sum(Count))*100, 
+         Classif= factor(Classif, levels=c('Gene', 'Pfam' , 'Accession', 'Domain'))) 
+  
+
+```
+
+
+```{r, fig.height=3, fig.width=4}
+color_scale= c(Pfam='#440154',
+                Accession='#3168ae',
+                Gene= '#de4968',
+                Domain= '#febb81')
+
+merged_ages_counts %>% 
+  filter(Level=='Era') %>% 
+  ggplot(aes(x=Group,y=Percent)) +
+  geom_col(aes(fill=Classif), position='dodge')+
+  theme_classic()+
+  coord_cartesian(expand = F) +
+  xlab('Era')+
+  ylab('% per Group')+
+  scale_fill_manual(values = color_scale)
+```
+
+
+```{r, fig.height=3, fig.width=6}
+merged_ages_counts %>% 
+  filter(Level=='PS') %>% 
+  ggplot(aes(x=Group,y=Percent)) +
+  geom_col(aes(fill=Classif), position='dodge', show.legend = F)+
+  theme_classic()+
+  coord_cartesian(expand = F) +
+  xlab('PS')+
+  ylab('% per Group')+
+  scale_fill_manual(values = color_scale)
+```
+
+
+```{r, fig.height=3, fig.width=4}
+geom_text(data= filter(data, {{y}} >= threshold),aes(label = {{y}}), hjust=1.1, vjust = 0.5, angle = 90, color= 'white')+
+  geom_text(data= filter(data, {{y}} < threshold),aes(label = {{y}}), hjust=-0.1, vjust = 0.5, angle = 90, color= 'gray20')
+```
+
+## Figure 1D
+
+First one with boxplots
+
+```{r}
+Figure_1DA <- data_age_unified %>%
+  distinct(Name, Plen, Era) %>%  
+  ggplot( aes(x=Era ,y =Plen, group=Era))+
+    geom_boxplot()+
+    scale_y_log10()+
+    theme_classic()
+
+Figure_1DB <- data_age_unified %>%
+  distinct(domain_accession, domain_plen, Era) %>%  
+  ggplot( aes(x=Era ,y =domain_plen, group=Era))+
+    geom_boxplot()+
+    scale_y_log10()+
+    theme_classic()
+
+Figure_1D <- egg::ggarrange(Figure_1DA,Figure_1DB)
+
+```
+
+Alternative with violin plots
+
+```{r}
+Figure_1DA <- data_age_unified %>%
+  distinct(Name, Plen, Era) %>%  
+  ggplot( aes(x=Era ,y =Plen, group=Era))+
+    geom_violin()+
+    scale_y_log10()+
+    theme_classic()
+
+Figure_1DB <- data_age_unified %>%
+  distinct(domain_accession, domain_plen, Era) %>%  
+  ggplot( aes(x=Era ,y =domain_plen, group=Era))+
+    geom_violin()+
+    scale_y_log10()+
+    theme_classic()
+
+Figure_1D_alt <- egg::ggarrange(Figure_1DA,Figure_1DB)
+```
+
+
+## Figure 1E
+
+```{r}
+data %>% 
+  count(Name) %>%
+  count(n) %>% 
+  mutate(n=as.factor(n)) %>% 
+  ggplot(aes(x=n, y=nn), fill='lightcoral')+
+    geom_col()
+  
+```
+
+## Figure 1F
+
+```{r}
+
+```
+
+
+
+
+
+# Suplm. 1
+
+## Suplm. 1A
+
+```{r}
+domain_quality_analysis <- data_age_unified %>%
+  mutate(domain_E.value.1.0e.03 = domain_E.value.1.0e.03 == "True")%>%
+  group_by(Name) %>%
+  summarise( No_domains = sum(is.na(domain_plen)),       
+    Good = sum(!is.na(domain_plen) & domain_E.value.1.0e.03),   
+    Bad = sum(!is.na(domain_plen) & !domain_E.value.1.0e.03)) %>% 
+  ungroup() %>% 
+  mutate(Result=case_when(No_domains==1 ~'No domains',
+                          Good <1 ~'Bad domains',
+                          Good >=1~'Good domains'))
+
+Suplm_1A <-  domain_quality_analysis %>% 
+  count(Result, sort = T) %>% 
+  mutate(percent=round(n/sum(n)*100,2)) %>% 
+  ggplot(aes(x="", y=percent, fill=Result)) +
+  geom_col(color = "black") +
+  geom_text(aes(label = percent),
+             position = position_stack(vjust = 0.5)) +
+  theme_void()+
+  coord_polar(theta = "y")+
+    scale_fill_brewer()
+```
+
+## Suplm. 1B
+
+```{r}
+domain_length_analysis <- data_age_unified %>%
+  distinct(domain_accession, domain_plen, domain_E.value.1.0e.03) %>% 
+  mutate(Result=case_when(domain_plen<40 ~'<40 aa',
+                          domain_plen>=40 & domain_E.value.1.0e.03 =='False' ~'>40 aa',
+                          domain_plen>=40 & domain_E.value.1.0e.03 =='True' ~'>40 aa <10^3')) 
+  
+
+Suplm_1B <- domain_length_analysis %>% 
+  count(Result, sort = T) %>% 
+  filter(!is.na(Result)) %>% 
+  mutate(percent=round(n/sum(n)*100,2)) %>% 
+  ggplot(aes(x="", y=percent, fill=Result)) +
+  geom_col(color = "black") +
+  geom_text(aes(label = percent),
+             position = position_stack(vjust = 0.5)) +
+  theme_void()+
+  coord_polar(theta = "y")+
+    scale_fill_brewer()
+
+
+```
+
+## Suplm. 1C
+
+```{r}
+Suplm_1C <- data_age_unified %>% 
+  distinct(Pfam_Clan,domain_accession) %>% 
+  count(Pfam_Clan) %>% 
+  filter(Pfam_Clan!='') %>% 
+  count(n) %>% 
+  mutate(n=as.factor(n)) %>% 
+  plot_bar(x =n ,y =nn ,threshold =2 ,fill ='lightcoral' )+
+  scale_y_log10()+
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+
+  
+```
+
+
+```{r}
+grid.arrange(Suplm_1A,Suplm_1B, Suplm_1C,
+             ncol = 2,
+             widths = c(1, 2),
+             layout_matrix = rbind(c(1, 3),
+                                   c(2, 3)))
+
+
+library(gridExtra)
+```
+
+
+# Figure 2
+
+## Figure 2AA
+
+```{r}
+table_age_differences <- data_age_unified %>% 
+  group_by(Name) %>% 
+  filter(n_distinct(domain_accession) >= 2) %>% 
+  summarise(PS_Age_difference = max(Domain_PS_Age[is.finite(Domain_PS_Age)], na.rm = TRUE) - 
+                              min(Domain_PS_Age[is.finite(Domain_PS_Age)], na.rm = TRUE),
+            Era_Age_difference = max(Domain_Era_Age[is.finite(Domain_Era_Age)], na.rm = TRUE) - 
+                                min(Domain_Era_Age[is.finite(Domain_Era_Age)], na.rm = TRUE),
+            youngest_PS_age = min(Domain_PS_Age[is.finite(Domain_PS_Age)], na.rm = TRUE),
+            oldest_PS_age = max(Domain_PS_Age[is.finite(Domain_PS_Age)], na.rm = TRUE),
+            youngest_Era_age = min(Domain_Era_Age[is.finite(Domain_Era_Age)], na.rm = TRUE),
+            oldest_Era_age = max(Domain_Era_Age[is.finite(Domain_Era_Age)], na.rm = TRUE),
+            youngest_PS = max(Domain_PS[is.finite(Domain_PS)], na.rm = TRUE),
+            oldest_PS = min(Domain_PS[is.finite(Domain_PS)], na.rm = TRUE),
+            youngest_Era = max(Domain_Era[is.finite(Domain_Era)], na.rm = TRUE),
+            oldest_Era = min(Domain_Era[is.finite(Domain_Era)], na.rm = TRUE)
+            ) %>% 
+  arrange(desc(PS_Age_difference))
+```
+
+
+```{r, intento de función}
+age_differences_plot <-  function(data, group_length=300, Age= PS_Age_difference, group=NA, threshold=NA){
+  data %>% 
+  filter(!is.infinite({{Age}})) %>% 
+    arrange({{Age}}) %>% 
+  mutate(range= {{Age}} %/% group_length,
+         range= group_length*(range+1),
+         range_character=ifelse({{Age}}==0,'0',paste0('<',range))) %>% 
+  count(range_character) %>% 
+  separate(range_character, into = c("sign", "range_numeric"), sep = "<", convert = TRUE, fill = "right") %>%
+  # Replace missing numeric values with 0 for proper ordering
+  mutate(range_numeric = ifelse(is.na(range_numeric), 0, range_numeric)) %>%
+  mutate(range_character = ifelse(range_numeric == 0, '0', paste0('<', range_numeric)),
+         range_character= factor(range_character, levels=c(0,paste0('<',seq(group_length, max(range_numeric), group_length))))) %>% 
+    plot_bar(x = range_character, y = n, threshold = threshold, fill = 'lightcoral')+ 
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+}
+
+```
+
+
+```{r}
+group_length=300
+
+table_age_differences %>% 
+  filter(!is.infinite(PS_Age_difference)) %>% 
+    arrange(PS_Age_difference) %>% 
+  mutate(range= PS_Age_difference %/% group,
+         range= group_length*(range+1),
+         range_character=ifelse(PS_Age_difference==0,'0',paste0('<',range))) %>% 
+  count(range_character) %>% 
+  separate(range_character, into = c("sign", "range_numeric"), sep = "<", convert = TRUE, fill = "right") %>%
+  # Replace missing numeric values with 0 for proper ordering
+  mutate(range_numeric = ifelse(is.na(range_numeric), 0, range_numeric)) %>%
+  mutate(range_character = ifelse(range_numeric == 0, '0', paste0('<', range_numeric)),
+         range_character= factor(range_character, levels=c(0,paste0('<',seq(group_length, max(range_numeric), group_length))))) %>%
+  plot_bar(x = range_character, y = n, threshold = 1000, fill = 'lightcoral')+
+  xlab('PS_Age_difference')+
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) 
+
+```
+
+## Figure 2AB
+
+```{r fig.height=4, fig.width=3}
+Figure_2AA <- table_age_differences %>% age_differences_plot(group_length = 300, Age= PS_Age_difference, threshold = 1000)
+
+Figure_2AB <- table_age_differences %>% age_differences_plot(group_length = 500, Age= Era_Age_difference, threshold = 1000)
+
+
+egg::ggarrange(Figure_2AA,Figure_2AB ) %>% 
+  ggsave(plot = ., filename = '/home/josema/Downloads/plots victor/Figure_2A.pdf', device = 'pdf', width = 3,height = 4)
+```
+
+### ALTERNATIVA
+
+```{r}
+age_differences_plot_group <-  function(data, group_length=300, Age , group=NA){
+  # Capture the variables
+  Age <- enquo(Age)
+  group <- enquo(group)
+  
+  data %>% 
+    filter(!is.infinite(!!Age)) %>% 
+    arrange(!!Age) %>% 
+    mutate(range = !!Age %/% group_length,
+           range = group_length * (range + 1),
+           range_character = ifelse(!!Age == 0, '0', paste0('<', range))) %>% 
+    count(range_character, !!group) %>% 
+    mutate(!!group := as.factor(!!group)) %>% 
+    separate(range_character, into = c("sign", "range_numeric"), sep = "<", 
+             convert = TRUE, fill = "right") %>%
+    mutate(range_numeric = ifelse(is.na(range_numeric), 0, range_numeric)) %>%
+    mutate(range_character = ifelse(range_numeric == 0, '0', 
+                                    paste0('<', range_numeric)),
+           range_character = factor(range_character, 
+                                    levels = c(0, paste0('<', seq(group_length, max(range_numeric), group_length))))) %>% 
+    ggplot(aes(x = range_character, y = n, fill = !!group)) +
+    geom_col() +
+    theme_classic() +
+    coord_cartesian(expand = F) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+}
+
+```
+
+
+```{r, fig.height=4, fig.width=4}
+Figure_2Ac <- table_age_differences %>% age_differences_plot_group(group_length = 300 ,Age =PS_Age_difference ,group = youngest_Era)
+Figure_2Ad <- table_age_differences %>% age_differences_plot_group(group_length = 500 ,Age =Era_Age_difference ,group = youngest_Era)
+
+ggpubr::ggarrange(Figure_2Ac,Figure_2Ad, common.legend = T, ncol = 1, legend = 'right')
+```
+
+
+```{r, fig.height=4, fig.width=3}
+Figure_2Ae <- table_age_differences %>% age_differences_plot_group(group_length = 300 ,Age =PS_Age_difference ,group = oldest_Era)
+Figure_2Af <- table_age_differences %>% age_differences_plot_group(group_length = 500 ,Age =Era_Age_difference ,group = oldest_Era)
+ggpubr::ggarrange(Figure_2Ae,Figure_2Af , common.legend = T, ncol = 1, legend = 'none') 
+
+
+```
+
+
+## Figure 2B
+
+```{r}
+Prot_dom_difference <- data_age_unified %>% 
+  group_by(Name) %>% 
+  summarise(PS_Age, oldest_domain_age= max(Domain_PS_Age, na.rm = T)) %>% 
+  filter(!is.infinite(oldest_domain_age)) %>% 
+  mutate(`P-D`= PS_Age - oldest_domain_age , 
+         `P-D/P+D`= (PS_Age - oldest_domain_age)/(PS_Age + oldest_domain_age ),
+         `|P-D|`= abs(`P-D`),
+         `|P-D/P+D|`= abs(`P-D/P+D`))
+
+
+Prot_dom_difference %>% 
+    pivot_longer(-c(Name, PS_Age, oldest_domain_age), names_to = 'Measurement',values_to =  'Difference') %>% 
+  mutate(Measurement=factor(Measurement,levels=c('P-D','P-D/P+D','|P-D|','|P-D/P+D|'))) %>% 
+  ggplot(aes(x=Measurement,y=Difference)) + 
+  geom_violin(fill='lightcoral') + 
+  facet_wrap(~Measurement, nrow = 1, scales = 'free')+
+  theme_classic()+
+    theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  theme(strip.background = element_rect(fill = NA, colour = NA),
+        strip.text.x = element_text(size = 12, color = "black", face = "bold")
+        )
+```
+
+## Figure 2B_beta
+
+```{r}
+Prot_dom_difference_eras <- data_age_unified %>% 
+  group_by(Name) %>% 
+  summarise(PS, oldest_domain_ps= min(Domain_PS, na.rm = T)) %>% 
+  filter(!is.infinite(oldest_domain_ps)) %>% 
+  mutate(`P-D`= PS - oldest_domain_ps , 
+         `P-D/P+D`= (PS - oldest_domain_ps)/(PS + oldest_domain_ps ),
+         `|P-D|`= abs(`P-D`),
+         `|P-D/P+D|`= abs(`P-D/P+D`))
+
+
+Prot_dom_difference_eras %>% 
+    pivot_longer(-c(Name, PS, oldest_domain_ps),
+                 names_to = 'Measurement',
+                 values_to =  'Difference') %>% 
+  mutate(Measurement=factor(Measurement,levels=c('P-D',
+                                                 'P-D/P+D',
+                                                 '|P-D|',
+                                                 '|P-D/P+D|'))) %>% 
+  ggplot(aes(x=Measurement,y=Difference)) + 
+  geom_violin(fill='lightcoral') + 
+  facet_wrap(~Measurement, nrow = 1, scales = 'free')+
+  theme_classic()+
+    theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  theme(strip.background = element_rect(fill = NA, colour = NA),
+        strip.text.x = element_text(size = 12, color = "black", face = "bold"))
+```
+
+# Figura 3
+
+## Figure 3A
+
+```{r}
+data_age_unified %>% 
+  distinct(Name,PS_Age,Protein_Complexity) %>% 
+  ggplot() +
+  geom_point(aes(x=PS_Age,y=Protein_Complexity), color='lightcoral', alpha=0.5)+
+  theme_classic()+
+  scale_x_log10()
+```
+
+## Figure 3B
+
+```{r}
+data_age_unified %>% 
+  group_by(domain_accession) %>%  
+  mutate(Domain_Complexity=max(Domain_Complexity, na.rm = TRUE)) %>% 
+  distinct(domain_accession, Domain_Complexity, Domain_PS_Age) %>% 
+  ggplot() +
+  geom_point(aes(x=Domain_PS_Age,y=Domain_Complexity), color='lightcoral', alpha=0.5)+
+  theme_classic()+
+  scale_x_log10()
+```
+
+
+## Figure 3C
+
+```{r}
+complexity_comparison <- data_age_unified %>% 
+  group_by(domain_accession) %>%  
+  mutate(Domain_Complexity=max(Domain_Complexity, na.rm = TRUE)) %>% 
+  group_by(Name) %>% 
+  summarise(Prot_complexity= max(Protein_Complexity, na.rm = T),
+         Domain_Complexity= max(Domain_Complexity, na.rm = T)) %>% 
+  mutate(`P-D`= Prot_complexity - Domain_Complexity , 
+         `P-D/P+D`= (Prot_complexity - Domain_Complexity)/(Prot_complexity + Domain_Complexity ),
+         `|P-D|`= abs(`P-D`),
+         `|P-D/P+D|`= abs(`P-D/P+D`)) %>% 
+  ungroup()
+
+
+complexity_comparison %>% 
+  pivot_longer(-c(Name, Prot_complexity, Domain_Complexity),
+               names_to = 'Measurement',
+               values_to =  'Difference') %>% 
+  mutate(Measurement=factor(Measurement,levels=c('P-D','P-D/P+D','|P-D|','|P-D/P+D|'))) %>% 
+  ggplot(aes(x=Measurement,y=Difference)) + 
+  geom_violin(fill='lightcoral') + 
+  facet_wrap(~Measurement, nrow = 1, scales = 'free')+
+  theme_classic()+
+    theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  theme(strip.background = element_rect(fill = NA, colour = NA),
+        strip.text.x = element_text(size = 12, color = "black", face = "bold"))
+  
+```
+
+# Figure 4
+
+## Figure 4A
+
+## Figure 4B
+
+## Figure 4C
+
+```{r}
+
+```
+
+# to do list
+
+## check the distribution of ages and sequences
+
+```{r}
+table_age_differences %>%
+  distinct(domain_accession, domain_plen,Domain_PS, domain_protein_sequence) %>% 
+  distinct(Domain_PS, domain_protein_sequence) %>% 
+  count(domain_protein_sequence, sort = T) 
+  
+```
+
+## 
+
+```{r}
+group_length = 300
+data_age_unified %>% 
+  mutate(range= Plen %/% group_length,
+         range= group_length*(range+1),
+         range_character=ifelse(Plen==0,'0',paste0('<',range))) %>% 
+  separate(range_character, into = c("sign", "range_numeric"), sep = "<", convert = TRUE, fill = "right") %>%
+  mutate(range_numeric = ifelse(is.na(range_numeric), 0, range_numeric)) %>%
+  mutate(range_character = ifelse(range_numeric == 0, '0', paste0('<', range_numeric)),
+         range_character= factor(range_character, levels=c(0,paste0('<',seq(group_length, max(range_numeric), group_length))))) %>% 
+  distinct(Name, range_character, PS, Protein_Complexity) %>% 
+  group_by(range_character, PS) %>% 
+  summarise(n=n(),
+            avg_complex= mean(Protein_Complexity)) %>% 
+  ggplot()+
+  geom_point(aes(x=range_character, y=PS, size=n, color=avg_complex))+
+  theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) +
+  xlab('Protein length range')
+  
+```
+
+# Youngest vs oldest domain
+
+```{r}
+# Youngest vs oldest domain
+table_age_differences %>% 
+  count(youngest_PS,oldest_PS, name = 'Number of proteins') %>% 
+  ggplot(aes(y=oldest_PS, x=youngest_PS, fill= `Number of proteins`))+
+  geom_tile()+
+    theme_classic()+
+  theme(aspect.ratio=1)+
+  xlab('Youngest domain PS')+
+  ylab('Oldest domain PS')+
+  scale_fill_viridis_c()+
+  coord_cartesian(expand = F) 
+
+# log10
+
+table_age_differences %>% 
+  count(youngest_PS,oldest_PS, name = 'Number of proteins') %>% 
+  ggplot(aes(y=oldest_PS, x=youngest_PS, fill= log10(`Number of proteins`)))+
+  geom_tile()+
+    theme_classic()+
+  theme(aspect.ratio=1)+
+  xlab('Youngest domain PS')+
+  ylab('Oldest domain PS')+
+  scale_fill_viridis_c()+
+  coord_cartesian(expand = F) +
+  guides(fill=guide_colourbar('Log10(Proteins)'))
+```
+
+
+
+
+
+
+
+
+
+
+
+Use a different dataset of the 
+
+
+```{r}
+
+```
+
+
+
+

@@ -1,0 +1,181 @@
+---
+title: "Cannabinoid receptor"
+output: html_document
+date: "2024-04-08"
+---
+
+# Introduction
+
+There are two main cannabinoid receptors: CB1 and CB2. This receptors are encoded by CNR1 and CNR2 genes, located in Chr6 and Chr1.
+
+The role of CNR1 in development and the consecuences that exogenous factors (drugs) might have in brain and CNS organogenesis.
+
+We usually use mice as experimental models to study the role of drug intake during pregnancy, but there are evidences that the cannabinoid receptor transcriptional pattern of mouse and human might be different.
+
+*Is the pattern of cannabinoid receptor expression along neurogenesis similar in mouse and human?*
+
+# Objectives
+
+- Find mouse and human databases 
+
+
+# Analysis using NOAK's dataset
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(readr)
+#library(SeuratDisk)
+```
+
+```{r}
+# Load the data
+expression<-readRDS("~/Downloads/merged_scRNA_unfiltered_IDs_faye.RDS")
+```
+
+```{r}
+# create the metadata
+
+#para la expresion, cargo el data. aunq tambien esta el scaled.data. no se 100% bien cual de los dos deberia cargar. no se por que han escalado los datos
+
+expression_matrix<-expression@assays$RNA@data
+metadata<-expression@meta.data
+metadata$celltype<-Idents(expression)
+#mezclar las mitoticas con las no mitoticas.
+metadata$celltype<-gsub("_M","",metadata$celltype)
+metadata<-metadata %>% filter(!is.na(pseudotime))
+table(metadata$celltype)/175
+#hacer pseudobulks de 175 celulas. pq es lo mas justo para hacer 2 pseudobulks en pn3
+
+#hacer los heatmaps con esto. y luego ponerle los picos, su trayectoria, motivos, y spacing. y
+j<-1
+for (cell in c("NSC","IPC","PN1","PN2","PN3")) {
+  print(cell)
+  metadata_cell<-metadata %>% filter(celltype==cell)
+  metadata_cell<-metadata_cell %>% arrange(pseudotime)
+  i<-1
+  while ((i+175)<=length(metadata_cell$pseudotime)) {
+    pseudobulk_cells<-rownames(metadata_cell)[i:(i+174)]
+    pseudobulk_expression<-rowSums(as.matrix(expression_matrix[,pseudobulk_cells]))
+    if (j==1) { pseudo_expression<-pseudobulk_expression}
+    if (j>1) { pseudo_expression<-cbind(pseudo_expression,pseudobulk_expression)}
+    i<-i+175
+    j<-j+1
+  }
+}
+colnames(pseudo_expression)
+colnames(pseudo_expression)<-c(paste0("NSC_",1:11),paste0("IPC_",1:8),paste0("PN1_",1:9),paste0("PN2_",1:8),paste0("PN3_",1:2))
+```
+
+```{r}
+z_score <- pseudo_expression %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Symbol') %>%
+  pivot_longer(-Symbol, names_to = 'Cell_type', values_to = 'expression') %>% 
+  group_by(Symbol) %>% 
+  mutate(Zscore=(expression - mean(expression))/sd(expression)) %>%
+  ungroup() %>% 
+  mutate(Group=gsub('\\_.*','',Cell_type),
+         Group=factor(Group, levels=c('NSC','IPC','PN1','PN2','PN3')),
+         Pseudotime=gsub('.*\\_','',Cell_type),
+         Pseudotime= factor(Pseudotime, levels = as.character(1:12)),
+         Symbol=toupper(Symbol))
+```
+
+```{r, fig.width=6, fig.height=1.6}
+
+z_score %>% 
+  filter(grepl('CNR[[:digit:]]',Symbol)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=Pseudotime, y=Symbol, fill= expression))+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e') +
+  geom_tile()+
+  facet_grid(~Group, scales  = 'free', space = 'free')+
+  theme_bw()+
+  theme(legend.position = 'bottom',
+        strip.placement = "outside", 
+        strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x=element_blank())
+
+
+z_score %>% 
+  filter(grepl('CNR[[:digit:]]',Symbol)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=Pseudotime, y=Symbol, fill= Zscore))+
+  scale_fill_gradient2(  low = scales::muted("blue"), 
+                         mid = "white", 
+                         high = scales::muted("red")) +
+  geom_tile()+
+  facet_grid(~Group, scales  = 'free', space = 'free')+
+  theme_bw()+
+  theme(legend.position = 'bottom',
+        strip.placement = "outside", 
+        strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x=element_blank())
+```
+
+# La mano 2021 data
+
+```{r}
+Manno_mouse <- readRDS('/projects_ng/SC_DATA/Manno2021/mdev_seu_0503_2021.rds')
+Manno_mouse <- UpdateSeuratObject(Manno_mouse)
+```
+
+```{r}
+Manno_metadata <-  Manno_mouse@meta.data
+Manno_RNA <- Manno_mouse[["RNA"]]$data %>% as.matrix()
+```
+
+## Cannabinoid 
+
+```{r}
+Manno_RNA %>% rownames() %>%  grep('Cnr[[:digit:]].*',., value=TRUE)
+
+Manno_RNA_Cnr<- Manno_RNA[c('Cnr1','Cnr2'),] %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Cell_ID')
+
+Manno_RNA_Cnr_merged <- Manno_metadata %>% 
+  select(IsCycling,Age,Class,Subclass) %>% 
+  rownames_to_column('Cell_ID') %>% 
+  inner_join(Manno_RNA_Cnr, by='Cell_ID')
+
+Manno_RNA_Cnr_merged 
+```
+
+```{r}
+Plot_dotplot_Cnr_by_class <- Manno_RNA_Cnr_merged %>%
+  pivot_longer(c(Cnr1, Cnr2), names_to = 'Gene', values_to = 'Expression') %>%  
+  mutate_all(~replace(., .==0, NA)) %>%
+  group_by(Class, Gene) %>% 
+  summarise(Avg=mean(Expression,na.rm=TRUE),
+            Percent= 1-(sum(is.na(Expression))/n())) %>% 
+  ungroup() %>% 
+  arrange(Gene,desc(Avg)) %>% 
+  ggplot()+
+  geom_point(aes(y=Class, x=Gene, size=Percent, color=Avg))+
+  theme_classic()+
+  scale_color_gradient(low = "#caf0f8",high = '#03045e') 
+
+
+ggsave(Plot_dotplot_Cnr_by_class,
+       filename='~/Plot_dotplot_Cnr_by_class.pdf',
+       device = "pdf",
+       height = 6, width =4 , units = "in")
+```
+
+# U
+
+```{r}
+
+```
+

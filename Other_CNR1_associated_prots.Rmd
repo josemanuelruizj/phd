@@ -1,0 +1,375 @@
+---
+title: "Other CNR1"
+output: html_notebook
+---
+
+# La_Manno
+
+```{r}
+CNR1_manno <- read_csv('/home/josema/Downloads/manno_Cannabinoids.csv')
+Manno_mouse_meta <- read.csv('/home/josema/Downloads/manno_metadata.csv') 
+
+com_class_order= c('Other','PROG', 'IPC', 'NEU')
+age_order_manno=c('e7.0', 'e8.0', 'e8.5', 'e9.0', 'e10.0',
+  'e11.0', 'e12.0', 'e12.5', 'e13.0','e13.5',
+  'e14.0', 'e14.5', 'e15.0','e15.5', 'e16.0',
+  'e16.25','e16.5', 'e17.0', 'e17.5','e18.0')
+
+Manno_CNR1_exp_meta <- inner_join(CNR1_manno, Manno_mouse_meta, by=c('Cell_Id'='X')) %>%   
+  mutate(com_class= case_when(Class.x == 'Neuron' ~ 'NEU',
+                              Class.x == 'Neuroblast' ~ 'IPC',
+                              Class.x %in% c('Radial glia', 'Neural tube','Neural crest') ~ 'PROG',
+                              TRUE ~ 'Other'),
+         com_class= factor(com_class,levels=com_class_order),
+         Age=factor(Age.x, levels=age_order_manno)) %>%
+  filter(com_class!='Other')
+
+
+```
+
+
+```{r fig.height=9, fig.width=6}
+
+Manno_dotplot_data <- Manno_CNR1_exp_meta %>%
+  pivot_longer(cols=c(Cnr1, Cnr2, Napepld, Mgll, Daglb, Dagla, Cnrip1, Faah), names_to = 'Gene', values_to = 'Expression') %>% 
+  group_by(com_class,Age, Tissue, Gene) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Tissue, Gene) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  mutate(dataset='Manno') %>% 
+  ungroup()
+
+Manno_dotplot_data %>% 
+  mutate(Age=factor(Age, levels=age_order_manno),
+         com_class = factor(com_class, levels=com_class_order) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Tissue~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+
+```{r}
+Manno_dotplot_data <- Manno_CNR1_exp_meta %>%
+  pivot_longer(cols=c(Cnr1, Cnr2, Napepld, Mgll, Daglb, Dagla, Cnrip1, Faah), names_to = 'Gene', values_to = 'Expression') %>% 
+  group_by(com_class,Age, Gene) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  mutate(dataset='Manno') %>% 
+  ungroup()
+
+Manno_dotplot_data %>% 
+  mutate(Age=factor(Age, levels=age_order_manno),
+         com_class = factor(com_class, levels=com_class_order) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Gene~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+                  legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+                strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+```{r fig.height=5, fig.width=20}
+
+Manno_CNR1_exp_meta <- inner_join(CNR1_manno, Manno_mouse_meta, by=c('Cell_Id'='X')) %>%   
+  mutate(com_class= case_when(Class.x == 'Neuron' ~ 'NEU',
+                              Class.x == 'Neuroblast' ~ 'IPC',
+                              Class.x %in% c('Radial glia', 'Neural tube','Neural crest') ~ 'PROG',
+                              TRUE ~ 'Other'),
+         com_class= factor(com_class,levels=com_class_order),
+         Age=factor(Age.x, levels=age_order_manno)) 
+
+Manno_dotplot_data_all <- Manno_CNR1_exp_meta %>%
+  pivot_longer(cols=c(Cnr1, Cnr2, Napepld, Mgll, Daglb, Dagla, Cnrip1, Faah), names_to = 'Gene', values_to = 'Expression') %>% 
+  group_by(Class.y,Age, Gene) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  mutate(dataset='Manno') %>% 
+  ungroup()
+Manno_dotplot_data_all %>% 
+  mutate(Age=factor(Age, levels=age_order_manno) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Gene~Class.y, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+                  legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+                strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+
+
+# Noak
+
+```{r}
+
+```
+
+# Di bella
+
+```{r}
+dibella_expression <- Matrix::readMM('/home/josema/Downloads/gene_sorted-matrix.mtx')
+dibella_Metadata <- read_tsv('/home/josema/Downloads/metaData_scDevSC.txt') %>% slice(-1)
+dibella_genes <-  read_tsv('/home/josema/Downloads/genes(1).tsv',col_names = F)
+
+colnames(dibella_expression) <- dibella_Metadata %>% pull(NAME)
+rownames(dibella_expression) <- dibella_genes %>% pull(X1)
+
+dibella_expression_CNR1 <- dibella_expression[c("Cnr1","Cnr2",'Napepld','Faah','Mgll','Daglb','Dagla','Cnrip1'),] %>% as.matrix() %>%  t()  %>% as.data.frame() %>%  set_names(c("Cnr1","Cnr2",'Napepld','Faah','Mgll','Daglb','Dagla','Cnrip1'))
+dibella_UMAP <- read_tsv('/home/josema/Downloads/cluster_scDevSC.merged.umap.txt')%>% slice(-1)
+
+com_class_order= c('Other','PROG', 'IPC', 'NEU')
+
+
+dibella_merged <- dibella_Metadata %>%  
+  cbind(dibella_expression_CNR1) %>% 
+  inner_join(dibella_UMAP,by='NAME') %>% 
+  mutate(com_class= case_when(New_cellType %in% c('Cajal Retzius cells','CThPN',
+                                       'DL CPN','DL_CPN_1','DL_CPN_2',
+                                       'Immature neurons','Interneurons',
+                                       'Layer 4','Layer 6b','Migrating neurons',
+                                       'SCPN','UL CPN') ~ 'NEU',
+                              New_cellType%in% c('Apical progenitors') ~ 'PROG',
+                              New_cellType%in% c('Intermediate progenitors') ~ 'IPC',
+                              TRUE ~ 'Other'),
+         X=as.numeric(X),
+         Y=as.numeric(Y)) %>% 
+  filter(com_class!='Other')
+
+dibella_merged %>% 
+  pivot_longer(cols = c(Cnr1,Cnr2,Napepld,Faah,Mgll,Daglb,Dagla,Cnrip1), names_to = 'Gene', values_to = 'Expression') %>% 
+    group_by(com_class,orig_ident, Gene) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  ungroup() %>% 
+  mutate(Age=factor(orig_ident),
+         com_class = factor(com_class, levels=com_class_order) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Gene~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+                  legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+                strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+  
+```
+
+# Micali
+
+```{r}
+metadata_monkey <- read_csv('/home/josema/Downloads/metadata_monkey.csv')
+CNR1_monkey <- read_csv('/home/josema/Downloads/Monkey_cnr1cascade_index.csv')%>%  setNames(c('observations',"CNR1","CNR2",'NAPEPLD','FAAH','FAAH2','MGLL','DAGLB','DAGLA','CNRIP1'))
+
+
+
+metadata_filtered <- metadata_monkey %>%  select(UMAP_1,UMAP_2,orig.ident, observations, subclass)
+
+age_oder_monkey <- c('E37','E42','E43','E54','E62','E64','E77','E78','E93','RMB691','RMB683')  
+UMAP_coordinates <- metadata_monkey %>% inner_join(CNR1_monkey) %>% 
+  mutate(com_class= case_when(subclass %in% c('CR','Excitatory neurons','Inhibitory neurons') ~ 'NEU',
+                              subclass%in% c('Early subtypes','Patterning centers') ~ 'PROG',
+                              subclass%in% c('enIPC','inIPC') ~ 'IPC',
+                              subclass%in% c('dorsal NSC','GE NSC') ~ 'PROG',
+                              TRUE ~ 'Other'),
+         Age=factor(orig.ident, levels=age_oder_monkey)) %>% 
+  filter(com_class!='Other')
+
+```
+
+```{r}
+UMAP_coordinates %>% 
+  pivot_longer(cols = c(CNR1,CNR2,NAPEPLD,FAAH,FAAH2,MGLL,DAGLB,DAGLA,CNRIP1), names_to = 'Gene', values_to = 'Expression') %>% 
+    group_by(com_class,Age, Gene) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0)) %>% 
+  ungroup() %>% 
+  mutate(
+         com_class = factor(com_class, levels=com_class_order) ) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Gene~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+                  legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+                strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+# Eze
+
+```{r}
+Eze <- read.csv('~/Downloads/EZE_cnr1network.csv')
+
+com_class_order= c('Other','PROG', 'IPC', 'NEU')
+
+
+Eze %>% 
+  pivot_longer(cols = c(CNR1,CNR2,NAPEPLD,FAAH,FAAH2,MGLL,DAGLB,DAGLA,CNRIP1), 
+               names_to = 'Gene', 
+               values_to = 'Expression') %>% 
+  mutate(com_class= case_when(Cell.Type %in% c('Neuronal') ~ 'NEU',
+                              Cell.Type%in% c('Radial Glial') ~ 'PROG',
+                              Cell.Type%in% c('IPC') ~ 'IPC',
+                              Cell.Type%in% c('Neuroepithelial') ~ 'PROG',
+                              TRUE ~ 'Other'),
+         Age=as.factor(Age)) %>% 
+    group_by(com_class,Age, Gene) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0),) %>% 
+  ungroup() %>% 
+  filter(com_class!='Other') %>% 
+  mutate(com_class = factor(com_class, levels=com_class_order )) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Gene~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+                  legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+                strip.text.y.left = element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+```
+
+# Trevino
+
+```{r}
+trevino <- read.csv('~/Downloads/Trevino_cannabinoids.csv')
+
+trevino %>% 
+  pivot_longer(cols = c(CNR1,CNR2,NAPEPLD,FAAH,FAAH2,MGLL,DAGLB,DAGLA,CNRIP1), 
+               names_to = 'Gene', 
+               values_to = 'Expression') %>%
+    group_by(com_class,Age, Gene, Lineage) %>% 
+  summarise(N=n(),
+            Avg=mean(Expression,na.rm=TRUE),
+            Percent= (sum(Expression>0)/n())) %>% 
+  group_by(Gene, Lineage) %>% 
+  mutate(`0_max`=(Avg- 0) /(max(Avg)-0),) %>% 
+  ungroup() %>% 
+  mutate(com_class = factor(com_class, levels=c('RG','IPC','NEU') )) %>% 
+  mutate(across(everything(), ~replace(.x, is.nan(.x), 0))) %>% 
+  ggplot(aes(x=Age, y=Gene, fill=`0_max`))+
+  geom_tile(color='gray30')+
+  scale_fill_gradient(low = "#caf0f8",high = '#03045e')+
+  theme_classic()+
+  facet_grid(Lineage~com_class, switch = 'y', scales = 'free', space='free')+
+  theme( axis.text.x = element_text( angle = 90,vjust=0.5,hjust = 1),
+                  legend.position = 'bottom',
+         strip.placement = "outside",
+         strip.background.x=element_rect(color = NA,
+                                        fill=NA), 
+        strip.background.y=element_blank(),
+        strip.text.x.top = element_text(face = 'bold', color = 'gray30'),
+        axis.title.y=element_blank(),
+        panel.border = element_rect(color = "gray50", fill = NA),
+                  panel.grid.major.x  = element_blank() )+
+    guides(size=guide_legend(nrow=1, byrow=TRUE,title.position="top", title.hjust = 0.5),
+           fill = guide_colourbar(title.position="top", title.hjust = 0.5))+
+    scale_size_continuous(range = c(0,2))+
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = 5)) 
+
+```
+
+## all subtypes
+
+
