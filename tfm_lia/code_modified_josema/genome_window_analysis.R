@@ -267,6 +267,69 @@ bhlh_table_for_window <- function(window_seq, meta, include_revcomp) {
   out
 }
 
+functional_group_from_motif <- function(motif) {
+  first_monomer <- substr(motif, 1L, 3L)
+  second_monomer <- paste0("CA", chartr("ACGT", "TGCA", substr(motif, 4L, 4L)))
+  paste(sort(c(first_monomer, second_monomer), decreasing = TRUE), collapse = "-")
+}
+
+functional_bhlh_table_from_sequence_table <- function(sequence_table, meta) {
+  sequence_table$functional_group <- vapply(
+    sequence_table$motif,
+    functional_group_from_motif,
+    character(1)
+  )
+
+  groups <- sort(unique(sequence_table$functional_group))
+  out <- do.call(
+    rbind,
+    lapply(groups, function(group) {
+      rows <- sequence_table[sequence_table$functional_group == group, , drop = FALSE]
+      monomers <- strsplit(group, "-", fixed = TRUE)[[1]]
+      observed_count <- sum(rows$observed_count)
+      expected_count <- sum(rows$expected_count_markov)
+      observed_valid_hexamer_total <- unique(ifelse(
+        rows$observed_frequency_all_hexamers > 0,
+        rows$observed_count / rows$observed_frequency_all_hexamers,
+        NA_real_
+      ))
+      observed_valid_hexamer_total <- observed_valid_hexamer_total[!is.na(observed_valid_hexamer_total)]
+      observed_valid_hexamer_total <- if (length(observed_valid_hexamer_total) > 0) {
+        observed_valid_hexamer_total[[1]]
+      } else {
+        0
+      }
+
+      data.frame(
+        species = meta$species,
+        seq_id = meta$seq_id,
+        window_index = meta$window_index,
+        start = meta$start,
+        end = meta$end,
+        window_length = meta$window_length,
+        acgt_fraction = meta$acgt_fraction,
+        functional_group = group,
+        monomer_1 = monomers[[1]],
+        monomer_2 = monomers[[2]],
+        sequence_motifs = paste(rows$motif, collapse = ","),
+        n_sequence_motifs = nrow(rows),
+        observed_count = observed_count,
+        observed_frequency_all_hexamers = if (observed_valid_hexamer_total > 0) {
+          observed_count / observed_valid_hexamer_total
+        } else {
+          0
+        },
+        expected_probability_markov = sum(rows$expected_probability_markov),
+        expected_count_markov = expected_count,
+        ratio_observed_expected = if (expected_count > 0) observed_count / expected_count else NA_real_,
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+  rownames(out) <- NULL
+  out
+}
+
 analyse_one_window <- function(seq, seq_id, window_row, opts) {
   window_seq <- substr(seq, window_row$start, window_row$end)
   bases <- strsplit(toupper(window_seq), "", fixed = TRUE)[[1]]
@@ -290,9 +353,12 @@ analyse_one_window <- function(seq, seq_id, window_row, opts) {
     return(NULL)
   }
 
+  bhlh <- bhlh_table_for_window(window_seq, meta, opts$include_revcomp)
+
   list(
     dinucleotides = dinucleotide_table_for_window(window_seq, meta, opts$include_revcomp),
-    bhlh = bhlh_table_for_window(window_seq, meta, opts$include_revcomp)
+    bhlh = bhlh,
+    functional_bhlh = functional_bhlh_table_from_sequence_table(bhlh, meta)
   )
 }
 
@@ -308,7 +374,7 @@ append_table <- function(path, table) {
   )
 }
 
-process_sequence <- function(seq_id, seq, opts, dinuc_path, bhlh_path) {
+process_sequence <- function(seq_id, seq, opts, dinuc_path, bhlh_path, functional_bhlh_path) {
   seq <- gsub("[[:space:]]", "", seq)
   seq_len <- nchar(seq)
   if (seq_len == 0L) {
@@ -335,8 +401,10 @@ process_sequence <- function(seq_id, seq, opts, dinuc_path, bhlh_path) {
 
   dinuc <- do.call(rbind, lapply(results, `[[`, "dinucleotides"))
   bhlh <- do.call(rbind, lapply(results, `[[`, "bhlh"))
+  functional_bhlh <- do.call(rbind, lapply(results, `[[`, "functional_bhlh"))
   append_table(dinuc_path, dinuc)
   append_table(bhlh_path, bhlh)
+  append_table(functional_bhlh_path, functional_bhlh)
   invisible(NULL)
 }
 
@@ -344,8 +412,10 @@ process_fasta <- function(opts) {
   dir.create(opts$output_dir, recursive = TRUE, showWarnings = FALSE)
   dinuc_path <- file.path(opts$output_dir, paste0(opts$species, "_dinucleotides_by_window.tsv"))
   bhlh_path <- file.path(opts$output_dir, paste0(opts$species, "_bhlh_CANNTG_by_window.tsv"))
+  functional_bhlh_path <- file.path(opts$output_dir, paste0(opts$species, "_bhlh_CAN_CAN_functional_by_window.tsv"))
   if (file.exists(dinuc_path)) file.remove(dinuc_path)
   if (file.exists(bhlh_path)) file.remove(bhlh_path)
+  if (file.exists(functional_bhlh_path)) file.remove(functional_bhlh_path)
 
   con <- open_fasta(opts$fasta)
   on.exit(close(con), add = TRUE)
@@ -363,7 +433,7 @@ process_fasta <- function(opts) {
     for (line in lines) {
       if (startsWith(line, ">")) {
         if (!is.null(current_id)) {
-          process_sequence(current_id, paste0(unlist(current_seq, use.names = FALSE), collapse = ""), opts, dinuc_path, bhlh_path)
+          process_sequence(current_id, paste0(unlist(current_seq, use.names = FALSE), collapse = ""), opts, dinuc_path, bhlh_path, functional_bhlh_path)
         }
         current_id <- sanitize_seq_name(line)
         current_seq <- list()
@@ -376,11 +446,12 @@ process_fasta <- function(opts) {
   }
 
   if (!is.null(current_id)) {
-    process_sequence(current_id, paste0(unlist(current_seq, use.names = FALSE), collapse = ""), opts, dinuc_path, bhlh_path)
+    process_sequence(current_id, paste0(unlist(current_seq, use.names = FALSE), collapse = ""), opts, dinuc_path, bhlh_path, functional_bhlh_path)
   }
 
   message("Wrote: ", dinuc_path)
   message("Wrote: ", bhlh_path)
+  message("Wrote: ", functional_bhlh_path)
 }
 
 main <- function() {
