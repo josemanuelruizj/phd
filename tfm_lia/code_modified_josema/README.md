@@ -13,15 +13,25 @@ El flujo genera tres tablas finales por genoma:
 Desde esta carpeta:
 
 ```bash
-sbatch run_one_genome.sbatch /ruta/al/genoma.fa.gz human /ruta/a/resultados 50000
+sbatch run_one_genome.sbatch /ruta/al/genoma.fa.gz /ruta/a/resultados 50000
 ```
+
+El nombre de especie se toma automaticamente del nombre del FASTA. Por ejemplo, `/ruta/hg38.fa.gz` genera salidas con prefijo `hg38`.
 
 El job usa un solo nodo (`--nodes=1`, `--ntasks=1`) y paraleliza dentro del nodo con `--cpus-per-task`. Cambia los recursos al lanzar o editando el encabezado del `.sbatch`.
 
-Para usar ventanas solapadas se puede definir `STEP_SIZE` al lanzar. Por ejemplo, para reproducir el avance antiguo de ventanas de 50 kb con solape de 4 bp:
+Por defecto se usa un solape de 4 bp entre ventanas, igual que el avance antiguo. Con ventanas de 50 kb, el script calcula automaticamente `STEP_SIZE=49996`.
+
+Para cambiar el solape, pasalo como cuarto argumento:
 
 ```bash
-STEP_SIZE=49996 sbatch run_one_genome.sbatch /ruta/al/genoma.fa.gz human /ruta/a/resultados 50000
+sbatch run_one_genome.sbatch /ruta/al/genoma.fa.gz /ruta/a/resultados 50000 10
+```
+
+Tambien puedes forzar una etiqueta de especie o un `STEP_SIZE` concreto con variables de entorno:
+
+```bash
+SPECIES=human STEP_SIZE=49996 sbatch run_one_genome.sbatch /ruta/al/genoma.fa.gz /ruta/a/resultados 50000
 ```
 
 ## Columnas principales
