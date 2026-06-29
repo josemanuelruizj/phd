@@ -1,0 +1,47 @@
+# R / RStudio
+.Rhistory
+.RData
+.Rproj.user/
+*.rds
+*.Rds
+*.RData
+
+# Python / notebooks
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Slurm / logs
+slurm-*.out
+*.err
+*.log
+logs/
+
+# Heavy bioinformatics files
+*.bam
+*.bai
+*.sam
+*.fastq
+*.fq
+*.fastq.gz
+*.fq.gz
+*.vcf
+*.vcf.gz
+*.bcf
+*.h5
+*.h5ad
+*.loom
+*.mtx
+*.tar
+*.tar.gz
+*.zip
+
+# 10x / Cell Ranger outputs
+outs/
+filtered_feature_bc_matrix/
+raw_feature_bc_matrix/
+
+# Temp/cache
+tmp/
+temp/
+cache/
