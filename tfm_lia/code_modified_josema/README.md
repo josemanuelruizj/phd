@@ -69,6 +69,114 @@ TOP_N=50 LOG2_THRESHOLD=2 TOP_PERCENT=5 PVALUE_THRESHOLD=0.01 MIN_EXPECTED_ZERO=
   /ruta/a/resultados/summaries
 ```
 
+## Que threshold afecta a cada summary
+
+`TOP_N` afecta solo a:
+
+- `<species>_functional_topN_by_log2_pseudocount.tsv`
+- `<species>_functional_topN_by_depletion_score.tsv`
+
+En `functional_topN_by_log2_pseudocount.tsv`, para cada `functional_group`, se escriben dos bloques en el mismo archivo:
+
+- `representation = over`: las `TOP_N` ventanas con `log2_ratio_pseudocount` mas alto.
+- `representation = under`: las `TOP_N` ventanas con `log2_ratio_pseudocount` mas bajo.
+
+En `functional_topN_by_depletion_score.tsv`, se escriben solo regiones infrarepresentadas:
+
+- `representation = under`
+- ordenadas por `depletion_score = expected_count_markov - observed_count`
+
+Esta tabla esta pensada para encontrar regiones donde faltan muchos sitios en terminos absolutos, aunque el log2 no sea extremo.
+
+`TOP_PERCENT` afecta solo a:
+
+- `<species>_functional_top<X>percent_by_log2_pseudocount.tsv`
+
+Para cada `functional_group`, coge el X% mas positivo y el X% mas negativo segun `log2_ratio_pseudocount`. Igual que el top N, contiene ambos sentidos en el mismo archivo:
+
+- `representation = over`
+- `representation = under`
+
+`LOG2_THRESHOLD` afecta solo a:
+
+- `<species>_functional_log2_pseudocount_threshold_<X>.tsv`
+
+Esta tabla usa el tamano del efecto, no el p-value. Incluye regiones que cumplen:
+
+```text
+abs(log2_ratio_pseudocount) >= LOG2_THRESHOLD
+```
+
+Por tanto incluye ambos sentidos:
+
+- `representation = over` si `log2_ratio_pseudocount >= LOG2_THRESHOLD`
+- `representation = under` si `log2_ratio_pseudocount <= -LOG2_THRESHOLD`
+
+`PVALUE_THRESHOLD` afecta solo a:
+
+- `<species>_functional_padj_significant_<X>.tsv`
+
+Esta tabla usa p-values Poisson ajustados por BH. Incluye dos tipos de filas en el mismo archivo:
+
+- `representation = over`: filas con `padj_over <= PVALUE_THRESHOLD`
+- `representation = under`: filas con `padj_under <= PVALUE_THRESHOLD`
+
+Es decir, no elige solo over ni solo under: mete los dos si pasan su p-value correspondiente.
+
+`MIN_EXPECTED_ZERO` afecta solo a:
+
+- `<species>_functional_zero_observed_high_expected.tsv`
+
+Esta tabla esta pensada para rescatar ausencias biologicamente interesantes. Incluye solo:
+
+```text
+observed_count == 0
+expected_count_markov >= MIN_EXPECTED_ZERO
+```
+
+Todas sus filas son:
+
+```text
+representation = under
+```
+
+Se ordena por `expected_count_markov` de mayor a menor, porque una ventana con `observed = 0` y `expected = 10` es mucho mas interesante que una con `observed = 0` y `expected = 0.01`.
+
+`PSEUDOCOUNT` afecta a las tablas que usan `log2_ratio_pseudocount`:
+
+- `<species>_functional_topN_by_log2_pseudocount.tsv`
+- `<species>_functional_top<X>percent_by_log2_pseudocount.tsv`
+- `<species>_functional_log2_pseudocount_threshold_<X>.tsv`
+
+No afecta a los p-values Poisson ni a `depletion_score`.
+
+## Por que hay p-value over y p-value under
+
+Hay dos p-values porque son dos preguntas estadisticas distintas.
+
+`p_over` pregunta:
+
+```text
+Si esperaba expected_count_markov sitios, cual es la probabilidad de observar observed_count o mas?
+```
+
+Sirve para detectar sobre-representacion. Ejemplo: esperabas 2 y observas 10.
+
+`p_under` pregunta:
+
+```text
+Si esperaba expected_count_markov sitios, cual es la probabilidad de observar observed_count o menos?
+```
+
+Sirve para detectar infrarepresentacion. Ejemplo: esperabas 10 y observas 0.
+
+Por eso el summary de p-value usa:
+
+- `padj_over` para filas `representation = over`
+- `padj_under` para filas `representation = under`
+
+Ambos p-values se calculan para todas las filas, pero cada direccion usa el suyo.
+
 ## Columnas principales
 
 Ambas tablas incluyen `species`, `seq_id`, `window_index`, `start`, `end`, `window_length` y `acgt_fraction`.
