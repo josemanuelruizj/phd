@@ -18,9 +18,6 @@ parse_args <- function(args) {
       "  --cores              CPUs to use inside one node. Default: 1\n",
       "  --include_revcomp    TRUE/FALSE, analyse reverse complement too. Default: TRUE\n",
       "  --min_acgt_fraction  Drop windows below this A/C/G/T fraction. Default: 0\n",
-      "  --top_n              Top N over/underrepresented windows per functional group. Default: 100\n",
-      "  --log2_threshold     Absolute log2 ratio threshold for functional regions. Default: 1\n",
-      "  --top_percent        Top percent over/underrepresented windows per functional group. Default: 1\n",
       sep = ""
     )
     quit(save = "no", status = 0)
@@ -34,10 +31,7 @@ parse_args <- function(args) {
     step_size = NA_integer_,
     cores = 1L,
     include_revcomp = TRUE,
-    min_acgt_fraction = 0,
-    top_n = 100L,
-    log2_threshold = 1,
-    top_percent = 1
+    min_acgt_fraction = 0
   )
 
   i <- 1L
@@ -71,9 +65,6 @@ parse_args <- function(args) {
   opts$cores <- as.integer(opts$cores)
   opts$include_revcomp <- tolower(opts$include_revcomp) %in% c("true", "t", "1", "yes", "y")
   opts$min_acgt_fraction <- as.numeric(opts$min_acgt_fraction)
-  opts$top_n <- as.integer(opts$top_n)
-  opts$log2_threshold <- as.numeric(opts$log2_threshold)
-  opts$top_percent <- as.numeric(opts$top_percent)
 
   if (is.na(as.integer(opts$step_size))) {
     opts$step_size <- opts$window_size
@@ -93,21 +84,28 @@ parse_args <- function(args) {
   if (opts$min_acgt_fraction < 0 || opts$min_acgt_fraction > 1) {
     stop("--min_acgt_fraction must be between 0 and 1", call. = FALSE)
   }
-  if (opts$top_n < 1L) {
-    stop("--top_n must be at least 1", call. = FALSE)
-  }
-  if (opts$log2_threshold < 0) {
-    stop("--log2_threshold must be 0 or higher", call. = FALSE)
-  }
-  if (opts$top_percent <= 0 || opts$top_percent > 100) {
-    stop("--top_percent must be > 0 and <= 100", call. = FALSE)
-  }
 
   opts
 }
 
 log2_or_na <- function(x) {
   ifelse(is.na(x), NA_real_, log2(x))
+}
+
+add_count_metrics <- function(table, expected_col = "expected_count", pseudocount = 0.5) {
+  expected <- table[[expected_col]]
+  observed <- table$observed_count
+
+  table$ratio_observed_expected <- ifelse(expected > 0, observed / expected, NA_real_)
+  table$log2_ratio_observed_expected <- log2_or_na(table$ratio_observed_expected)
+  table$log2_ratio_pseudocount <- log2((observed + pseudocount) / (expected + pseudocount))
+  table$depletion_score <- expected - observed
+  table$enrichment_score <- observed - expected
+  table$is_zero_observed <- observed == 0 & expected > 0
+  table$p_under <- ifelse(expected > 0, ppois(observed, lambda = expected), NA_real_)
+  table$p_over <- ifelse(expected > 0, ppois(observed - 1, lambda = expected, lower.tail = FALSE), NA_real_)
+
+  table
 }
 
 open_fasta <- function(path) {
@@ -187,9 +185,7 @@ dinucleotide_table_for_window <- function(window_seq, meta, include_revcomp) {
   )
   out$expected_probability <- expected_probability
   out$expected_count <- expected_probability * observed_total
-  out$ratio_observed_expected <- ifelse(out$expected_count > 0, out$observed_count / out$expected_count, NA_real_)
-  out$log2_ratio_observed_expected <- log2_or_na(out$ratio_observed_expected)
-  out
+  add_count_metrics(out, expected_col = "expected_count")
 }
 
 transition_matrix <- function(seq) {
@@ -282,13 +278,7 @@ bhlh_table_for_window <- function(window_seq, meta, include_revcomp) {
   }
   out$expected_probability_markov <- expected_probability
   out$expected_count_markov <- expected_probability * observed_valid_hexamer_total
-  out$ratio_observed_expected <- ifelse(
-    out$expected_count_markov > 0,
-    out$observed_count / out$expected_count_markov,
-    NA_real_
-  )
-  out$log2_ratio_observed_expected <- log2_or_na(out$ratio_observed_expected)
-  out
+  add_count_metrics(out, expected_col = "expected_count_markov")
 }
 
 functional_group_from_motif <- function(motif) {
@@ -324,7 +314,7 @@ functional_bhlh_table_from_sequence_table <- function(sequence_table, meta) {
         0
       }
 
-      data.frame(
+      out <- data.frame(
         species = meta$species,
         seq_id = meta$seq_id,
         window_index = meta$window_index,
@@ -345,10 +335,9 @@ functional_bhlh_table_from_sequence_table <- function(sequence_table, meta) {
         },
         expected_probability_markov = sum(rows$expected_probability_markov),
         expected_count_markov = expected_count,
-        ratio_observed_expected = if (expected_count > 0) observed_count / expected_count else NA_real_,
-        log2_ratio_observed_expected = if (expected_count > 0) log2(observed_count / expected_count) else NA_real_,
         stringsAsFactors = FALSE
       )
+      add_count_metrics(out, expected_col = "expected_count_markov")
     })
   )
   rownames(out) <- NULL
@@ -397,76 +386,6 @@ append_table <- function(path, table) {
     append = file.exists(path),
     col.names = !file.exists(path)
   )
-}
-
-write_functional_summary_tables <- function(functional_bhlh_path, opts) {
-  if (!file.exists(functional_bhlh_path)) {
-    return(invisible(NULL))
-  }
-
-  functional <- read.delim(functional_bhlh_path, stringsAsFactors = FALSE, check.names = FALSE)
-  functional <- functional[!is.na(functional$log2_ratio_observed_expected), , drop = FALSE]
-  if (nrow(functional) == 0L) {
-    return(invisible(NULL))
-  }
-
-  add_direction <- function(table) {
-    table$representation <- ifelse(table$log2_ratio_observed_expected >= 0, "over", "under")
-    table
-  }
-
-  top_n_rows <- do.call(
-    rbind,
-    lapply(split(functional, functional$functional_group), function(group_table) {
-      over <- group_table[group_table$log2_ratio_observed_expected > 0, , drop = FALSE]
-      under <- group_table[group_table$log2_ratio_observed_expected < 0, , drop = FALSE]
-      over <- over[order(-over$log2_ratio_observed_expected), , drop = FALSE]
-      under <- under[order(under$log2_ratio_observed_expected), , drop = FALSE]
-      add_direction(rbind(head(over, opts$top_n), head(under, opts$top_n)))
-    })
-  )
-  rownames(top_n_rows) <- NULL
-  top_n_path <- file.path(
-    opts$output_dir,
-    paste0(opts$species, "_functional_CAN_CAN_top_", opts$top_n, "_over_under_by_group.tsv")
-  )
-  write.table(top_n_rows, top_n_path, sep = "\t", row.names = FALSE, quote = FALSE)
-
-  threshold_rows <- functional[abs(functional$log2_ratio_observed_expected) >= opts$log2_threshold, , drop = FALSE]
-  threshold_rows <- add_direction(threshold_rows)
-  threshold_rows <- threshold_rows[order(
-    threshold_rows$functional_group,
-    -abs(threshold_rows$log2_ratio_observed_expected)
-  ), , drop = FALSE]
-  threshold_path <- file.path(
-    opts$output_dir,
-    paste0(opts$species, "_functional_CAN_CAN_log2_threshold_", opts$log2_threshold, ".tsv")
-  )
-  write.table(threshold_rows, threshold_path, sep = "\t", row.names = FALSE, quote = FALSE)
-
-  top_percent_rows <- do.call(
-    rbind,
-    lapply(split(functional, functional$functional_group), function(group_table) {
-      n_keep <- max(1L, ceiling(nrow(group_table) * opts$top_percent / 100))
-      over <- group_table[group_table$log2_ratio_observed_expected > 0, , drop = FALSE]
-      under <- group_table[group_table$log2_ratio_observed_expected < 0, , drop = FALSE]
-      over <- over[order(-over$log2_ratio_observed_expected), , drop = FALSE]
-      under <- under[order(under$log2_ratio_observed_expected), , drop = FALSE]
-      add_direction(rbind(head(over, n_keep), head(under, n_keep)))
-    })
-  )
-  rownames(top_percent_rows) <- NULL
-  top_percent_label <- gsub(".", "p", as.character(opts$top_percent), fixed = TRUE)
-  top_percent_path <- file.path(
-    opts$output_dir,
-    paste0(opts$species, "_functional_CAN_CAN_top_", top_percent_label, "percent_over_under_by_group.tsv")
-  )
-  write.table(top_percent_rows, top_percent_path, sep = "\t", row.names = FALSE, quote = FALSE)
-
-  message("Wrote: ", top_n_path)
-  message("Wrote: ", threshold_path)
-  message("Wrote: ", top_percent_path)
-  invisible(NULL)
 }
 
 process_sequence <- function(seq_id, seq, opts, dinuc_path, bhlh_path, functional_bhlh_path) {
@@ -547,7 +466,6 @@ process_fasta <- function(opts) {
   message("Wrote: ", dinuc_path)
   message("Wrote: ", bhlh_path)
   message("Wrote: ", functional_bhlh_path)
-  write_functional_summary_tables(functional_bhlh_path, opts)
 }
 
 main <- function() {
