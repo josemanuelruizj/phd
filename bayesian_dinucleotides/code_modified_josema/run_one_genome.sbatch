@@ -24,9 +24,6 @@ SPECIES=${SPECIES%.fa}
 SPECIES=${SPECIES%.fna}
 SPECIES=${SPECIES%.fas}
 STEP_SIZE=${STEP_SIZE:-$((WINDOW_SIZE - OVERLAP))}
-TOP_N=${TOP_N:-100}
-LOG2_THRESHOLD=${LOG2_THRESHOLD:-1}
-TOP_PERCENT=${TOP_PERCENT:-1}
 CORES=${SLURM_CPUS_PER_TASK:-1}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -44,7 +41,4 @@ Rscript "$SCRIPT_DIR/genome_window_analysis.R" \
   --window_size "$WINDOW_SIZE" \
   --step_size "$STEP_SIZE" \
   --cores "$CORES" \
-  --top_n "$TOP_N" \
-  --log2_threshold "$LOG2_THRESHOLD" \
-  --top_percent "$TOP_PERCENT" \
   --include_revcomp TRUE
