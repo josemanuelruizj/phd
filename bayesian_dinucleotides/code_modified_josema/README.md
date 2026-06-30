@@ -2,10 +2,11 @@
 
 Adaptacion de `tfm_lia/scripts_anabel` para analizar FASTA completos de genomas de referencia sin partirlos previamente por cromosomas.
 
-El flujo se divide en dos pasos:
+El flujo se divide en tres pasos:
 
 1. `genome_window_analysis.R`: calculo pesado por ventanas.
 2. `summarize_functional_windows.R`: seleccion de regiones funcionales a partir de la tabla ya calculada.
+3. `annotate_functional_summaries_chipseeker.R`: anotacion tipo ChIPseeker de cada tabla summary.
 
 El primer paso genera tres tablas principales por genoma:
 
@@ -21,6 +22,16 @@ El segundo paso genera tablas resumen a partir de los grupos funcionales sin rec
 - `<species>_functional_log2_pseudocount_threshold_<X>.tsv`: regiones con `abs(log2_ratio_pseudocount) >= X`.
 - `<species>_functional_padj_significant_<X>.tsv`: regiones significativas por p-value Poisson ajustado.
 - `<species>_functional_zero_observed_high_expected.tsv`: regiones con `observed_count = 0` y esperado alto.
+
+El tercer paso anota cada una de esas tablas summary contra la anotacion de la especie y genera, por especie:
+
+- `<species>_<summary>_chipseeker_annotation.tsv`: una tabla anotada por cada summary.
+- `<species>_all_summary_tables_chipseeker_annotation.tsv`: tabla combinada con todas las anotaciones de todos los summaries.
+- `<species>_summary_by_functional_group.tsv`: distribucion genomica por `functional_group` y tipo de summary.
+- `<species>_summary_by_summary_table.tsv`: distribucion genomica por tabla summary.
+- `<species>_genes_by_functional_group.tsv`: genes asociados a las regiones, si ChIPseeker puede extraer identificadores de la anotacion.
+- `<species>_annotation_by_functional_group.pdf`: plot de distribucion genomica por grupo funcional.
+- `<species>_distance_to_TSS_by_functional_group.pdf`: plot de distancia al TSS.
 
 ## Uso en cluster
 
@@ -67,6 +78,77 @@ TOP_N=50 LOG2_THRESHOLD=2 TOP_PERCENT=5 PVALUE_THRESHOLD=0.01 MIN_EXPECTED_ZERO=
   sbatch run_functional_summaries.sbatch \
   /ruta/a/resultados/human_bhlh_CAN_CAN_functional_by_window.tsv \
   /ruta/a/resultados/summaries
+```
+
+### 3. Anotar funcionalmente los summaries con ChIPseeker
+
+Este paso se hace despues de crear los summaries. No anota la tabla completa
+`<species>_bhlh_CAN_CAN_functional_by_window.tsv`; anota cada tabla summary generada en el paso 2.
+
+Para una especie concreta:
+
+```bash
+sbatch run_chipseeker_summaries.sbatch \
+  /ruta/a/resultados/summaries \
+  /ruta/a/anotaciones \
+  /ruta/a/resultados/chipseeker_summaries \
+  human
+```
+
+Para todas las especies detectadas dentro de la carpeta de summaries:
+
+```bash
+sbatch run_chipseeker_summaries.sbatch \
+  /ruta/a/resultados/summaries \
+  /ruta/a/anotaciones \
+  /ruta/a/resultados/chipseeker_summaries
+```
+
+Si quieres que el script use la carpeta de FASTA solo para decidir que especies buscar, puedes pasarla como variable de entorno:
+
+```bash
+FASTA_DIR=/ruta/a/fastas \
+  sbatch run_chipseeker_summaries.sbatch \
+  /ruta/a/resultados/summaries \
+  /ruta/a/anotaciones \
+  /ruta/a/resultados/chipseeker_summaries
+```
+
+La anotacion de cada especie se busca automaticamente en `/ruta/a/anotaciones`. El nombre del fichero de anotacion debe contener o empezar por el mismo nombre de especie que se uso para el FASTA y para los summaries. Por ejemplo:
+
+```text
+fastas/human.fa.gz
+summaries/human_functional_topN_by_log2_pseudocount.tsv
+anotaciones/human.gtf.gz
+```
+
+Si el nombre no coincide, fuerza la anotacion con `ANNOTATION_FILE` y, normalmente, una especie concreta:
+
+```bash
+ANNOTATION_FILE=/ruta/a/anotaciones/Homo_sapiens.GRCh38.113.gtf.gz \
+  sbatch run_chipseeker_summaries.sbatch \
+  /ruta/a/resultados/summaries \
+  /ruta/a/anotaciones \
+  /ruta/a/resultados/chipseeker_summaries \
+  human
+```
+
+Formatos aceptados para anotaciones:
+
+- `GTF`, `GTF.gz`, `GFF`, `GFF.gz`, `GFF3`, `GFF3.gz`
+- `TxDb` guardado como `.sqlite`, `.sqlite3` o `.rds`
+
+No hace falta cargar anotaciones desde librerias de R tipo `TxDb.Ptroglodytes...`: el script crea el `TxDb` desde el fichero de anotacion de tu carpeta. Aun asi, el cluster necesita tener instalados `ChIPseeker`, `GenomicFeatures`, `GenomicRanges`, `IRanges` y `S4Vectors`.
+
+Por defecto ChIPseeker usa promotor como `TSS +/- 3000 bp`. Puedes cambiarlo asi:
+
+```bash
+TSS_UPSTREAM=5000 TSS_DOWNSTREAM=1000 \
+  sbatch run_chipseeker_summaries.sbatch \
+  /ruta/a/resultados/summaries \
+  /ruta/a/anotaciones \
+  /ruta/a/resultados/chipseeker_summaries \
+  human
 ```
 
 ## Que threshold afecta a cada summary
