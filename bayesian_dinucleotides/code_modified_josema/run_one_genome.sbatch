@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-module load R/4.1.2
+module load R/4.3.2
 
 FASTA=${1:?Usage: sbatch run_one_genome.sbatch genome.fa.gz output_dir [window_size] [overlap]}
 OUTPUT_DIR=${2:?Usage: sbatch run_one_genome.sbatch genome.fa.gz output_dir [window_size] [overlap]}
