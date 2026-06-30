@@ -21,11 +21,18 @@ LOG2_THRESHOLD=${LOG2_THRESHOLD:-1}
 PVALUE_THRESHOLD=${PVALUE_THRESHOLD:-0.05}
 MIN_EXPECTED_ZERO=${MIN_EXPECTED_ZERO:-1}
 PSEUDOCOUNT=${PSEUDOCOUNT:-0.5}
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+SCRIPT_PATH="$SCRIPT_DIR/summarize_functional_windows.R"
+
+if [ ! -f "$SCRIPT_PATH" ]; then
+  echo "ERROR: Cannot find summarize_functional_windows.R in $SCRIPT_DIR" >&2
+  echo "Run sbatch from the code_modified_josema directory or set SLURM_SUBMIT_DIR correctly." >&2
+  exit 1
+fi
 
 mkdir -p logs "$OUTPUT_DIR"
 
-Rscript "$SCRIPT_DIR/summarize_functional_windows.R" \
+Rscript "$SCRIPT_PATH" \
   --functional_table "$FUNCTIONAL_TABLE" \
   --output_dir "$OUTPUT_DIR" \
   --top_n "$TOP_N" \
