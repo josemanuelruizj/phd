@@ -5,7 +5,7 @@
 *.rds
 *.Rds
 *.RData
-
+*ncbi_species_download/
 # Python / notebooks
 __pycache__/
 *.pyc
