@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-module load R/4.1.2
+module load R/4.3.2
 
 FUNCTIONAL_TABLE=${1:?Usage: sbatch run_functional_summaries.sbatch functional_table.tsv output_dir}
 OUTPUT_DIR=${2:?Usage: sbatch run_functional_summaries.sbatch functional_table.tsv output_dir}

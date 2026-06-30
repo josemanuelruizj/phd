@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-module load R/4.1.2
+module load R/4.3.2
 
 SUMMARY_DIR=${1:?Usage: sbatch run_chipseeker_summaries.sbatch summary_dir annotation_dir output_dir [species]}
 ANNOTATION_DIR=${2:?Usage: sbatch run_chipseeker_summaries.sbatch summary_dir annotation_dir output_dir [species]}
