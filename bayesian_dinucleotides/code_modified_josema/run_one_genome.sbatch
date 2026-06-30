@@ -25,7 +25,14 @@ SPECIES=${SPECIES%.fna}
 SPECIES=${SPECIES%.fas}
 STEP_SIZE=${STEP_SIZE:-$((WINDOW_SIZE - OVERLAP))}
 CORES=${SLURM_CPUS_PER_TASK:-1}
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+SCRIPT_PATH="$SCRIPT_DIR/genome_window_analysis.R"
+
+if [ ! -f "$SCRIPT_PATH" ]; then
+  echo "ERROR: Cannot find genome_window_analysis.R in $SCRIPT_DIR" >&2
+  echo "Run sbatch from the code_modified_josema directory or set SLURM_SUBMIT_DIR correctly." >&2
+  exit 1
+fi
 
 if [ "$STEP_SIZE" -lt 1 ]; then
   echo "ERROR: step size must be at least 1. Use an overlap smaller than window_size." >&2
@@ -34,7 +41,7 @@ fi
 
 mkdir -p logs "$OUTPUT_DIR"
 
-Rscript "$SCRIPT_DIR/genome_window_analysis.R" \
+Rscript "$SCRIPT_PATH" \
   --fasta "$FASTA" \
   --species "$SPECIES" \
   --output_dir "$OUTPUT_DIR" \

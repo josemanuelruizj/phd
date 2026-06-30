@@ -21,7 +21,14 @@ FASTA_DIR=${FASTA_DIR:-}
 ANNOTATION_FILE=${ANNOTATION_FILE:-}
 TSS_UPSTREAM=${TSS_UPSTREAM:-3000}
 TSS_DOWNSTREAM=${TSS_DOWNSTREAM:-3000}
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=${SLURM_SUBMIT_DIR:-$(pwd)}
+SCRIPT_PATH="$SCRIPT_DIR/annotate_functional_summaries_chipseeker.R"
+
+if [ ! -f "$SCRIPT_PATH" ]; then
+  echo "ERROR: Cannot find annotate_functional_summaries_chipseeker.R in $SCRIPT_DIR" >&2
+  echo "Run sbatch from the code_modified_josema directory or set SLURM_SUBMIT_DIR correctly." >&2
+  exit 1
+fi
 
 mkdir -p logs "$OUTPUT_DIR"
 
@@ -45,4 +52,4 @@ if [ -n "$ANNOTATION_FILE" ]; then
   ARGS+=(--annotation_file "$ANNOTATION_FILE")
 fi
 
-Rscript "$SCRIPT_DIR/annotate_functional_summaries_chipseeker.R" "${ARGS[@]}"
+Rscript "$SCRIPT_PATH" "${ARGS[@]}"
