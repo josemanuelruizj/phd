@@ -20,7 +20,7 @@ Desde `code_modified_josema`:
 ```bash
 sbatch run_cg_observed_frequency_plots.sbatch \
   /users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb \
-  /users/genomics/josema/Downloads/dnmt_methylation_info_download_species_UPDATED.tsv \
+  /users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv \
   /users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb/cg_observed_frequency_plots
 ```
 
@@ -46,6 +46,6 @@ Si ya existe `cg_observed_frequency_by_window.tsv`, puedes rehacer plots sin vol
 ```bash
 Rscript plot_cg_observed_frequency.R \
   --cg_table /ruta/cg_observed_frequency_by_window.tsv \
-  --methylation_table /ruta/dnmt_methylation_info_download_species_UPDATED.tsv \
+  --methylation_table /users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv \
   --output_dir /ruta/cg_observed_frequency_plots
 ```
