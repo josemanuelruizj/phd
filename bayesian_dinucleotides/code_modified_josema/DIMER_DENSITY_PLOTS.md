@@ -20,7 +20,7 @@ Desde `code_modified_josema`:
 ```bash
 sbatch run_dimer_density_plots.sbatch \
   /users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb \
-  /users/genomics/josema/Downloads/dnmt_methylation_info_download_species_UPDATED.tsv \
+  /users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv \
   /users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb/dimer_density_plots
 ```
 
@@ -52,7 +52,7 @@ dimer_ratio_density_by_methylation.png
 ```bash
 Rscript plot_dimer_ratio_densities.R \
   --density_table /ruta/dimer_ratio_density_values.tsv \
-  --methylation_table /ruta/dnmt_methylation_info_download_species_UPDATED.tsv \
+  --methylation_table /users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv \
   --output_dir /ruta/dimer_density_plots
 ```
 
