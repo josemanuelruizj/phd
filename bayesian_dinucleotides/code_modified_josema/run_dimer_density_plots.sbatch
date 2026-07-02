@@ -14,7 +14,7 @@ set -euo pipefail
 module load R/4.3.2
 
 INPUT_DIR=${1:-/users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb}
-METHYLATION_TABLE=${2:-/users/genomics/josema/Downloads/dnmt_methylation_info_download_species_UPDATED.tsv}
+METHYLATION_TABLE=${2:-/users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv}
 OUTPUT_DIR=${3:-$INPUT_DIR/dimer_density_plots}
 X_MIN=${X_MIN:-0}
 X_MAX=${X_MAX:-2.2}
