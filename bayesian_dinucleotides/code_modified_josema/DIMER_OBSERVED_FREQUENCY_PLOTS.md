@@ -22,7 +22,7 @@ Desde `code_modified_josema`:
 ```bash
 sbatch run_dimer_observed_frequency_plots.sbatch \
   /users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb \
-  /users/genomics/josema/Downloads/dnmt_methylation_info_download_species_UPDATED.tsv \
+  /users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv \
   /users/genomics/josema/phd/bayesian_dinucleotides/results_all_genomes_1kb/dimer_observed_frequency_plots
 ```
 
@@ -46,7 +46,7 @@ dimer_observed_frequency_species_medians.pdf/png
 ```bash
 Rscript plot_dimer_observed_frequency.R \
   --observed_table /ruta/dimer_observed_frequency_by_window.tsv \
-  --methylation_table /ruta/dnmt_methylation_info_download_species_UPDATED.tsv \
+  --methylation_table /users/genomics/josema/phd/bayesian_dinucleotides/code_modified_josema/dnmt_methylation_info_download_species_UPDATED.tsv \
   --output_dir /ruta/dimer_observed_frequency_plots
 ```
 
